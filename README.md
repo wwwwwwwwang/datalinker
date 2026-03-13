@@ -197,7 +197,9 @@ pnpm tauri build --no-bundle
 - `.github/workflows/build-windows-exe.yml`
   - push `main` 或手动触发
   - push `main` 时自动递增 tag（`vX.Y.Z`）并发布到 GitHub Releases
-  - 便携版文件名自动带版本号：`datalinker-portable-vX.Y.Z.exe`
+  - 发布文件名自动带版本号：
+    - `datalinker-portable-vX.Y.Z.exe`
+    - `datalinker-setup-vX.Y.Z.exe`
 - `.github/workflows/release-windows-exe.yml`
   - push tag（`v*`）触发
   - 手动打 tag 的兜底发布流程
@@ -221,7 +223,7 @@ git push origin v0.1.0
 
 发布后可在仓库 `Releases` 页面下载两类文件：
 - `datalinker-portable-vX.Y.Z.exe`：免安装，直接双击运行
-- `*-setup.exe`：NSIS 安装包，适合普通分发
+- `datalinker-setup-vX.Y.Z.exe`：NSIS 安装包，适合普通分发
 
 ## 配置存储
 
