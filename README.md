@@ -104,8 +104,23 @@ if (-not (($userPath -split ";") -contains $targetBin)) {
 
 ### 2. 安装 C++ 构建工具（Tauri Windows 必需）
 
-- 安装 Visual Studio Build Tools
-- 勾选工作负载：`使用 C++ 的桌面开发`
+1. 打开官方页面下载 Build Tools：  
+   `https://visualstudio.microsoft.com/visual-cpp-build-tools/`
+2. 点击 `Download Build Tools`，下载并运行安装器 `vs_BuildTools.exe`
+3. 在安装器的 `工作负载` 页签，勾选：`使用 C++ 的桌面开发`
+4. 在右侧安装明细中，确认以下组件已勾选（默认一般会带上）：
+   - `MSVC v143 - VS 2022 C++ x64/x86 build tools`
+   - `Windows 10 SDK` 或 `Windows 11 SDK`
+   - `C++ CMake tools for Windows`
+5. 点击 `安装`，安装完成后重开终端
+
+可选命令行安装（管理员 PowerShell）：
+
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e
+```
+
+如果你已安装 `Visual Studio Community/Professional`，并且已勾选同样的 C++ 工作负载，也可以不单独安装 Build Tools。
 
 ### 3. 验证安装
 
