@@ -196,12 +196,23 @@ pnpm tauri build --no-bundle
 仓库内已包含两个工作流：
 - `.github/workflows/build-windows-exe.yml`
   - push `main` 或手动触发
-  - 产物上传到 Actions Artifacts
+  - push `main` 时自动递增 tag（`vX.Y.Z`）并发布到 GitHub Releases
+  - 便携版文件名自动带版本号：`datalinker-portable-vX.Y.Z.exe`
 - `.github/workflows/release-windows-exe.yml`
   - push tag（`v*`）触发
-  - 自动发布到 GitHub Releases
+  - 手动打 tag 的兜底发布流程
 
-### 发布版本（推荐流程）
+### 发布版本（推荐流程：只提交代码）
+
+提交并推送到 `main` 即可自动发布：
+
+```bash
+git push origin main
+```
+
+### 手动发布（可选）
+
+如果你希望手动控制版本号，也可以继续手动打 tag：
 
 ```bash
 git tag v0.1.0
@@ -209,7 +220,7 @@ git push origin v0.1.0
 ```
 
 发布后可在仓库 `Releases` 页面下载两类文件：
-- `datalinker-portable.exe`：免安装，直接双击运行
+- `datalinker-portable-vX.Y.Z.exe`：免安装，直接双击运行
 - `*-setup.exe`：NSIS 安装包，适合普通分发
 
 ## 配置存储
@@ -234,7 +245,7 @@ git push origin v0.1.0
 
 4. 想要“免安装 EXE”而不是安装包
 - 本地：使用 `pnpm tauri build --no-bundle`
-- CI/Releases：已同时产出 `datalinker-portable.exe` 和 NSIS 安装包
+- CI/Releases：已同时产出 `datalinker-portable-vX.Y.Z.exe` 和 NSIS 安装包
 
 ## 目录结构
 
