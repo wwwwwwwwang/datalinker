@@ -110,13 +110,25 @@ jobs:
           if (-not $tag) { throw "Tag output is empty" }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          $existing = git tag -l $tag
-          if ($existing) {
-            Write-Host "Tag already exists: $tag"
+          git fetch --tags --force
+          $existingLocal = git tag -l $tag
+          $existingRemote = git ls-remote --tags origin "refs/tags/$tag"
+          if ($existingLocal -or $existingRemote) {
+            Write-Host "Tag already exists, skip creating: $tag"
             exit 0
           }
           git tag $tag
-          git push origin $tag
+          $pushOutput = git push origin "refs/tags/$tag" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $pushText = $pushOutput | Out-String
+            if ($pushText -match "already exists|\\[rejected\\]") {
+              Write-Host "Tag already exists on remote, skip pushing: $tag"
+              exit 0
+            }
+            $pushOutput
+            throw "Failed to push tag: $tag"
+          }
+          $pushOutput
 
       - name: Publish GitHub Release (auto tag)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
