@@ -31,8 +31,6 @@ struct DnaData {
 
 #[derive(Clone)]
 struct LabelResult {
-    simple_data_batch_code: String,
-    standard_sample_data_batch_code: String,
     label: String,
     result: i32,
     standard_a: f64,
@@ -72,6 +70,9 @@ struct ContrastProcessResult {
     summary_rows: Vec<ContrastResultRow>,
     detail_rows: Vec<ContrastDetailRow>,
 }
+
+type BatchDataMap = HashMap<String, Vec<DnaData>>;
+type BatchLabelMap = HashMap<String, HashMap<String, Vec<DnaData>>>;
 
 const CONFIG_DIR_NAME: &str = "xJavaFxTool";
 const CONTRAST_CONFIG_FILE: &str = "dataProcess.properties";
@@ -346,6 +347,30 @@ fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
     Ok(dna_data_list)
 }
 
+fn build_batch_data_map(data: &[DnaData]) -> BatchDataMap {
+    let mut batch_map: BatchDataMap = HashMap::new();
+    for item in data {
+        batch_map
+            .entry(item.batch_code.clone())
+            .or_default()
+            .push(item.clone());
+    }
+    batch_map
+}
+
+fn build_batch_label_map(data: &[DnaData]) -> BatchLabelMap {
+    let mut batch_label_map: BatchLabelMap = HashMap::new();
+    for item in data {
+        batch_label_map
+            .entry(item.batch_code.clone())
+            .or_default()
+            .entry(item.label.clone())
+            .or_default()
+            .push(item.clone());
+    }
+    batch_label_map
+}
+
 fn get_compare_a(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
     let a = standard.a;
     let b = standard.b;
@@ -448,88 +473,104 @@ fn result_category(result: i32) -> &'static str {
 
 fn normal_process(
     contrast_row: &ContrastRow,
-    standard_list: &[DnaData],
-    sample_map: &HashMap<String, Vec<DnaData>>,
+    standard_batch_map: &BatchDataMap,
+    sample_batch_map: &BatchLabelMap,
     is_paternity: bool,
 ) -> ContrastProcessResult {
-    let mut label_results: Vec<LabelResult> = Vec::new();
     let threshold_number = contrast_row
         .threshold_number
         .parse::<i32>()
         .unwrap_or(0);
+    let contrast_type = if is_paternity {
+        "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}".to_string()
+    } else {
+        "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}".to_string()
+    };
 
-    for standard in standard_list {
-        if let Some(sample_list) = sample_map.get(&standard.label) {
-            for sample in sample_list {
-                let result = if is_paternity {
-                    let compare_a = get_compare_a(standard, sample, threshold_number);
-                    let compare_b = get_compare_b(standard, sample, threshold_number);
-                    let compare_c = get_compare_c(standard, sample, threshold_number);
-                    get_label_result(compare_a, compare_b, compare_c)
-                } else {
-                    real_compare(standard, sample)
-                };
-                label_results.push(LabelResult {
-                    simple_data_batch_code: sample.batch_code.clone(),
-                    standard_sample_data_batch_code: standard.batch_code.clone(),
-                    label: standard.label.clone(),
-                    result,
-                    standard_a: standard.a,
-                    standard_b: standard.b,
-                    standard_c: standard.c,
-                    sample_a: sample.a,
-                    sample_b: sample.b,
-                    sample_c: sample.c,
-                });
-            }
-        }
-    }
+    let mut sample_batch_codes: Vec<String> = sample_batch_map.keys().cloned().collect();
+    sample_batch_codes.sort();
 
-    let mut result_map: HashMap<String, Vec<LabelResult>> = HashMap::new();
-    for item in label_results {
-        let key = format!(
-            "{}##{}",
-            item.simple_data_batch_code, item.standard_sample_data_batch_code
-        );
-        result_map.entry(key).or_default().push(item);
-    }
+    let mut standard_batch_codes: Vec<String> = standard_batch_map.keys().cloned().collect();
+    standard_batch_codes.sort();
 
     let mut contrast_results: Vec<ContrastResultRow> = Vec::new();
     let mut detail_rows: Vec<ContrastDetailRow> = Vec::new();
-    for (key, items) in result_map {
-        let mut parts = key.splitn(2, "##");
-        let simple_code = parts.next().unwrap_or("").to_string();
-        let standard_code = parts.next().unwrap_or("").to_string();
-        let same_count = items.iter().filter(|r| r.result == 1).count();
-        let diff_count = items.iter().filter(|r| r.result == 2).count();
-        let missing_count = items.iter().filter(|r| r.result == 0).count();
-        contrast_results.push(ContrastResultRow {
-            simple_data_batch_code: Some(simple_code.clone()),
-            standard_sample_data_batch_code: standard_code.clone(),
-            count: items.len(),
-            same_number_bits: same_count,
-            different_bits: diff_count,
-            missing_bits: missing_count,
-        });
 
-        for item in &items {
-            detail_rows.push(ContrastDetailRow {
-                contrast_type: if is_paternity {
-                    "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}".to_string()
-                } else {
-                    "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}".to_string()
-                },
-                simple_data_batch_code: simple_code.clone(),
-                standard_sample_data_batch_code: standard_code.clone(),
-                label: item.label.clone(),
-                category: result_category(item.result).to_string(),
-                standard_a: item.standard_a,
-                standard_b: item.standard_b,
-                standard_c: item.standard_c,
-                sample_a: item.sample_a,
-                sample_b: item.sample_b,
-                sample_c: item.sample_c,
+    for sample_batch_code in sample_batch_codes {
+        let sample_label_map = sample_batch_map.get(&sample_batch_code);
+        for standard_batch_code in &standard_batch_codes {
+            let Some(standard_items) = standard_batch_map.get(standard_batch_code) else {
+                continue;
+            };
+            if standard_items.is_empty() {
+                continue;
+            }
+
+            let mut items: Vec<LabelResult> = Vec::with_capacity(standard_items.len());
+            for standard in standard_items {
+                if let Some(sample_rows) = sample_label_map.and_then(|labels| labels.get(&standard.label)) {
+                    for sample_data in sample_rows {
+                        let result = if is_paternity {
+                            let compare_a = get_compare_a(standard, sample_data, threshold_number);
+                            let compare_b = get_compare_b(standard, sample_data, threshold_number);
+                            let compare_c = get_compare_c(standard, sample_data, threshold_number);
+                            get_label_result(compare_a, compare_b, compare_c)
+                        } else {
+                            real_compare(standard, sample_data)
+                        };
+                        items.push(LabelResult {
+                            label: standard.label.clone(),
+                            result,
+                            standard_a: standard.a,
+                            standard_b: standard.b,
+                            standard_c: standard.c,
+                            sample_a: sample_data.a,
+                            sample_b: sample_data.b,
+                            sample_c: sample_data.c,
+                        });
+                    }
+                    continue;
+                }
+
+                items.push(LabelResult {
+                    label: standard.label.clone(),
+                    result: 0,
+                    standard_a: standard.a,
+                    standard_b: standard.b,
+                    standard_c: standard.c,
+                    sample_a: 0.0,
+                    sample_b: 0.0,
+                    sample_c: 0.0,
+                });
+            }
+
+            let same_count = items.iter().filter(|r| r.result == 1).count();
+            let diff_count = items.iter().filter(|r| r.result == 2).count();
+            let missing_count = items.iter().filter(|r| r.result == 0).count();
+            contrast_results.push(ContrastResultRow {
+                simple_data_batch_code: Some(sample_batch_code.clone()),
+                standard_sample_data_batch_code: standard_batch_code.clone(),
+                count: items.len(),
+                same_number_bits: same_count,
+                different_bits: diff_count,
+                missing_bits: missing_count,
             });
+
+            for item in items {
+                detail_rows.push(ContrastDetailRow {
+                    contrast_type: contrast_type.clone(),
+                    simple_data_batch_code: sample_batch_code.clone(),
+                    standard_sample_data_batch_code: standard_batch_code.clone(),
+                    label: item.label.clone(),
+                    category: result_category(item.result).to_string(),
+                    standard_a: item.standard_a,
+                    standard_b: item.standard_b,
+                    standard_c: item.standard_c,
+                    sample_a: item.sample_a,
+                    sample_b: item.sample_b,
+                    sample_c: item.sample_c,
+                });
+            }
         }
     }
 
@@ -545,20 +586,16 @@ fn normal_process(
         }
     });
 
-    if let Some(first) = contrast_results.first() {
-        let mut first_simple = first.standard_sample_data_batch_code.clone();
-        for row in &mut contrast_results {
-            if row
-                .simple_data_batch_code
-                .clone()
-                .unwrap_or_default()
-                == first_simple
-            {
-                row.simple_data_batch_code = None;
-                continue;
-            }
-            first_simple = row.simple_data_batch_code.clone().unwrap_or_default();
+    let mut last_simple = String::new();
+    let mut seen_first = false;
+    for row in &mut contrast_results {
+        let current_simple = row.simple_data_batch_code.clone().unwrap_or_default();
+        if seen_first && current_simple == last_simple {
+            row.simple_data_batch_code = None;
+            continue;
         }
+        last_simple = current_simple;
+        seen_first = true;
     }
 
     detail_rows.sort_by(|a, b| {
@@ -732,13 +769,11 @@ fn run_contrast(row: ContrastRow) -> Result<String, String> {
         return Err("\u{89E3}\u{6790}Excel\u{5F02}\u{5E38},\u{8BF7}\u{68C0}\u{67E5}Excel\u{6570}\u{636E}".to_string());
     }
 
-    let mut sample_map: HashMap<String, Vec<DnaData>> = HashMap::new();
-    for item in sample_list {
-        sample_map.entry(item.label.clone()).or_default().push(item);
-    }
+    let standard_batch_map = build_batch_data_map(&standard_list);
+    let sample_batch_map = build_batch_label_map(&sample_list);
 
-    let normal_result = normal_process(&row, &standard_list, &sample_map, true);
-    let real_result = normal_process(&row, &standard_list, &sample_map, false);
+    let normal_result = normal_process(&row, &standard_batch_map, &sample_batch_map, true);
+    let real_result = normal_process(&row, &standard_batch_map, &sample_batch_map, false);
     let mut detail_rows = normal_result.detail_rows.clone();
     detail_rows.extend(real_result.detail_rows.clone());
 
@@ -779,6 +814,57 @@ fn run_contrast(row: ContrastRow) -> Result<String, String> {
         .map_err(|e| format!("\u{5199}\u{5165}\u{7ED3}\u{679C}\u{5931}\u{8D25}: {}", e))?;
 
     Ok(output_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dna(batch_code: &str, label: &str, a: f64, b: f64, c: f64) -> DnaData {
+        DnaData {
+            batch_code: batch_code.to_string(),
+            label: label.to_string(),
+            a,
+            b,
+            c,
+        }
+    }
+
+    fn contrast_row_for_test() -> ContrastRow {
+        ContrastRow {
+            standard_sample_path: String::new(),
+            sample_path: String::new(),
+            analysis_results_path: String::new(),
+            threshold_number: "1".to_string(),
+            remarks: String::new(),
+        }
+    }
+
+    #[test]
+    fn normal_process_compares_all_sample_rows_with_same_label() {
+        let standard_list = vec![dna("STD-1", "D8S1179", 10.0, 11.0, 12.0)];
+        let sample_list = vec![
+            dna("SAMPLE-1", "D8S1179", 10.0, 11.0, 12.0),
+            dna("SAMPLE-1", "D8S1179", 5.0, 6.0, 7.0),
+        ];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let result = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            false,
+        );
+
+        assert_eq!(result.summary_rows.len(), 1);
+        let row = &result.summary_rows[0];
+        assert_eq!(row.count, 2);
+        assert_eq!(row.same_number_bits, 1);
+        assert_eq!(row.different_bits, 1);
+        assert_eq!(row.missing_bits, 0);
+        assert_eq!(result.detail_rows.len(), 2);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
