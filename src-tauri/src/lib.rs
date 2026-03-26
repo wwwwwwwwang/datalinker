@@ -20,26 +20,6 @@ struct ContrastRow {
     remarks: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GroupRow {
-    selected: bool,
-    group: String,
-    primer_no: String,
-    fuel: String,
-    start: String,
-    end: String,
-}
-
-#[derive(Clone)]
-struct GroupData {
-    group: String,
-    primer_no: String,
-    fuel: String,
-    start: f64,
-    end: f64,
-}
-
 #[derive(Clone)]
 struct DnaData {
     batch_code: String,
@@ -95,7 +75,7 @@ struct ContrastProcessResult {
 
 const CONFIG_DIR_NAME: &str = "xJavaFxTool";
 const CONTRAST_CONFIG_FILE: &str = "dataProcess.properties";
-const GROUP_CONFIG_FILE: &str = "groupProcess.properties";
+const LEGACY_GROUP_CONFIG_FILE: &str = "groupProcess.properties";
 
 fn config_dir() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
@@ -106,6 +86,46 @@ fn config_dir() -> PathBuf {
 
 fn config_file(name: &str) -> PathBuf {
     config_dir().join(name)
+}
+
+fn cleanup_legacy_group_config() {
+    let path = config_file(LEGACY_GROUP_CONFIG_FILE);
+    if let Err(error) = fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            let _ = error;
+        }
+    }
+}
+
+fn cleanup_legacy_group_store<R: tauri::Runtime>(app: &tauri::App<R>) {
+    let mut store_paths = Vec::new();
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        store_paths.push(app_data_dir.join("datalinker.store.json"));
+    }
+    if let Some(app_data_dir) = std::env::var_os("APPDATA") {
+        store_paths.push(PathBuf::from(app_data_dir).join("com.admin.datalinker").join("datalinker.store.json"));
+    }
+    store_paths.sort();
+    store_paths.dedup();
+
+    for store_path in store_paths {
+        let Ok(content) = fs::read_to_string(&store_path) else {
+            continue;
+        };
+        let content = content.trim_start_matches('\u{feff}');
+        let Ok(mut store_json) = serde_json::from_str::<serde_json::Value>(content) else {
+            continue;
+        };
+        let Some(object) = store_json.as_object_mut() else {
+            continue;
+        };
+
+        if object.remove("groupRows").is_some() {
+            if let Ok(serialized) = serde_json::to_string_pretty(&store_json) {
+                let _ = fs::write(store_path, serialized);
+            }
+        }
+    }
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<(), String> {
@@ -248,30 +268,6 @@ fn contrast_row_from_property(value: &str) -> ContrastRow {
         analysis_results_path: parts.next().unwrap_or("").to_string(),
         threshold_number: parts.next().unwrap_or("").to_string(),
         remarks: parts.next().unwrap_or("").to_string(),
-    }
-}
-
-fn group_row_to_property(row: &GroupRow) -> String {
-    format!(
-        "{}__{}__{}__{}__{}__{}",
-        row.selected,
-        row.group,
-        row.primer_no,
-        row.fuel,
-        row.start,
-        row.end
-    )
-}
-
-fn group_row_from_property(value: &str) -> GroupRow {
-    let mut parts = value.splitn(6, "__");
-    GroupRow {
-        selected: parts.next().unwrap_or("false") == "true",
-        group: parts.next().unwrap_or("").to_string(),
-        primer_no: parts.next().unwrap_or("").to_string(),
-        fuel: parts.next().unwrap_or("").to_string(),
-        start: parts.next().unwrap_or("").to_string(),
-        end: parts.next().unwrap_or("").to_string(),
     }
 }
 
@@ -729,206 +725,6 @@ fn save_contrast_config(rows: Vec<ContrastRow>, path: Option<String>) -> Result<
 }
 
 #[tauri::command]
-fn load_group_config(path: Option<String>) -> Result<Vec<GroupRow>, String> {
-    let file = path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_file(GROUP_CONFIG_FILE));
-    let mut entries = load_properties(&file)?;
-    sort_table_entries(&mut entries);
-    let rows = entries
-        .into_iter()
-        .map(|(_, value)| group_row_from_property(&value))
-        .collect();
-    Ok(rows)
-}
-
-#[tauri::command]
-fn save_group_config(rows: Vec<GroupRow>, path: Option<String>) -> Result<String, String> {
-    let file = path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_file(GROUP_CONFIG_FILE));
-    let entries: Vec<(String, String)> = rows
-        .iter()
-        .enumerate()
-        .map(|(idx, row)| (format!("tableBean{}", idx), group_row_to_property(row)))
-        .collect();
-    save_properties(&file, &entries)?;
-    Ok(file.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn load_group_data(path: String) -> Result<Vec<GroupRow>, String> {
-    let mut workbook = open_workbook_auto(&path).map_err(|e| format!("Parse Excel failed: {}", e))?;
-    let range = workbook
-        .worksheet_range_at(0)
-        .ok_or_else(|| "Parse Excel failed, please check excel data".to_string())?
-        .map_err(|e| format!("Parse Excel failed: {}", e))?;
-
-    let mut rows = range.rows();
-    let header = rows.next().unwrap_or(&[]);
-    let mut header_map: HashMap<String, usize> = HashMap::new();
-    for (idx, cell) in header.iter().enumerate() {
-        let value = cell_to_string(cell).trim().to_string();
-        if value.is_empty() {
-            continue;
-        }
-        header_map.insert(value, idx);
-    }
-
-    let primer_idx = header_map.get("\u{5F15}\u{7269}\u{7F16}\u{53F7}").cloned();
-    let fuel_idx = header_map.get("\u{67D3}\u{6599}").cloned();
-    let start_idx = header_map.get("\u{8D77}\u{59CB}\u{8303}\u{56F4}").cloned();
-    let end_idx = header_map.get("\u{7EC8}\u{6B62}\u{8303}\u{56F4}").cloned();
-
-    let mut result = Vec::new();
-    for row in rows {
-        let primer_no = primer_idx
-            .and_then(|i| row.get(i))
-            .map(cell_to_string)
-            .unwrap_or_default();
-        let fuel = fuel_idx
-            .and_then(|i| row.get(i))
-            .map(cell_to_string)
-            .unwrap_or_default();
-        let start = start_idx
-            .and_then(|i| row.get(i))
-            .map(cell_to_string)
-            .unwrap_or_default();
-        let end = end_idx
-            .and_then(|i| row.get(i))
-            .map(cell_to_string)
-            .unwrap_or_default();
-
-        if is_blank(&primer_no) && is_blank(&fuel) && is_blank(&start) && is_blank(&end) {
-            continue;
-        }
-
-        result.push(GroupRow {
-            selected: false,
-            group: String::new(),
-            primer_no,
-            fuel,
-            start,
-            end,
-        });
-    }
-
-    Ok(result)
-}
-
-fn next_random_u64(seed: &mut u64) -> u64 {
-    *seed ^= *seed << 13;
-    *seed ^= *seed >> 7;
-    *seed ^= *seed << 17;
-    *seed
-}
-
-fn shuffle_group_data(data: &mut [GroupData]) {
-    if data.len() < 2 {
-        return;
-    }
-
-    let mut seed = now_millis() as u64 ^ (data.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    for i in (1..data.len()).rev() {
-        let random = next_random_u64(&mut seed);
-        let j = (random as usize) % (i + 1);
-        data.swap(i, j);
-    }
-}
-
-fn generate_group_code(counter: usize) -> String {
-    format!("GROUP-{counter:03}")
-}
-
-fn can_same_group(bean: &GroupData, another: &GroupData) -> bool {
-    if bean.fuel.trim() != another.fuel.trim() {
-        return true;
-    }
-    if bean.start.max(another.start) <= bean.end.min(another.end) {
-        return false;
-    }
-    true
-}
-
-fn get_group_name(data_group: &HashMap<String, Vec<GroupData>>, data: &GroupData) -> Option<String> {
-    let mut groups: Vec<(&str, usize)> = data_group
-        .iter()
-        .map(|(group_name, list)| (group_name.as_str(), list.len()))
-        .collect();
-    groups.sort_by(|a, b| a.1.cmp(&b.1));
-
-    for (group_name, _) in groups {
-        if let Some(group_list) = data_group.get(group_name) {
-            if group_list.iter().all(|existing| can_same_group(existing, data)) {
-                return Some(group_name.to_string());
-            }
-        }
-    }
-
-    None
-}
-
-#[tauri::command]
-fn do_group(rows: Vec<GroupRow>) -> Result<Vec<GroupRow>, String> {
-    let mut selected_data: Vec<GroupData> = rows
-        .into_iter()
-        .filter(|row| row.selected)
-        .map(|row| GroupData {
-            group: String::new(),
-            primer_no: row.primer_no,
-            fuel: row.fuel,
-            start: row.start.trim().parse::<f64>().unwrap_or(0.0),
-            end: row.end.trim().parse::<f64>().unwrap_or(0.0),
-        })
-        .collect();
-
-    if selected_data.is_empty() {
-        return Err("\u{8BF7}\u{52FE}\u{9009}\u{6570}\u{636E}".to_string());
-    }
-
-    shuffle_group_data(&mut selected_data);
-    let mut count = 0usize;
-    let mut data_group: HashMap<String, Vec<GroupData>> = HashMap::new();
-
-    let mut first = selected_data.remove(0);
-    count += 1;
-    let first_group_name = generate_group_code(count);
-    first.group = first_group_name.clone();
-    data_group.insert(first_group_name, vec![first.clone()]);
-
-    for data in &mut selected_data {
-        if let Some(group_name) = get_group_name(&data_group, data) {
-            data.group = group_name.clone();
-            if let Some(group_list) = data_group.get_mut(&group_name) {
-                group_list.push(data.clone());
-            }
-        } else {
-            count += 1;
-            let group = generate_group_code(count);
-            data.group = group.clone();
-            data_group.insert(group, vec![data.clone()]);
-        }
-    }
-
-    selected_data.push(first);
-    selected_data.sort_by(|a, b| a.group.cmp(&b.group));
-
-    Ok(
-        selected_data
-            .into_iter()
-            .map(|data| GroupRow {
-                selected: true,
-                group: data.group,
-                primer_no: data.primer_no,
-                fuel: data.fuel,
-                start: data.start.to_string(),
-                end: data.end.to_string(),
-            })
-            .collect(),
-    )
-}
-
-#[tauri::command]
 fn run_contrast(row: ContrastRow) -> Result<String, String> {
     let standard_list = get_excel_data(Path::new(&row.standard_sample_path))?;
     let sample_list = get_excel_data(Path::new(&row.sample_path))?;
@@ -992,6 +788,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            cleanup_legacy_group_config();
+            cleanup_legacy_group_store(app);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("\u{6570}\u{636E}\u{5904}\u{7406}");
                 if let Ok(Some(monitor)) = window.primary_monitor() {
@@ -1007,10 +805,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_contrast_config,
             save_contrast_config,
-            load_group_config,
-            save_group_config,
-            load_group_data,
-            do_group,
             run_contrast
         ])
         .run(tauri::generate_context!())

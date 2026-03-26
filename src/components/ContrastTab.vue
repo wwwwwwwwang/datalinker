@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ElMessage } from "element-plus";
+import "element-plus/es/components/message/style/css";
 import type { ContrastRow } from "../types";
 import { loadContrastRows, saveContrastRows } from "../services/configStore";
 
@@ -126,6 +127,10 @@ async function saveContrastConfig(options?: { silent?: boolean }) {
   } catch (error) {
     ElMessage.error(`保存配置失败：${error}`);
   }
+}
+
+async function onSaveContrastConfigClick() {
+  await saveContrastConfig();
 }
 
 async function loadContrastConfig() {
@@ -261,7 +266,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-tab-pane label="数据处理" name="contrast">
+  <section class="contrast-tab">
     <div class="form-row contrast-form-row">
       <label>标准样本路径：</label>
       <el-input v-model="contrastForm.standardSamplePath" readonly class="path-input">
@@ -357,7 +362,7 @@ onBeforeUnmount(() => {
     </el-table>
 
     <div class="action-row">
-      <el-button @click="saveContrastConfig">保存配置</el-button>
+      <el-button @click="onSaveContrastConfigClick">保存配置</el-button>
       <el-button type="danger" @click="deleteSelectedRow">删除选中行</el-button>
     </div>
 
@@ -366,7 +371,7 @@ onBeforeUnmount(() => {
       <div class="context-item" @click="deleteSelectedRow">删除选中行</div>
       <div class="context-item" @click="deleteAllRows">删除所有行</div>
     </div>
-  </el-tab-pane>
+  </section>
 </template>
 
 <style scoped>

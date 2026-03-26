@@ -1,17 +1,10 @@
 <script setup lang="ts">
-import { ref } from "vue";
 import ContrastTab from "./components/ContrastTab.vue";
-import GroupTab from "./components/GroupTab.vue";
-
-const activeTab = ref("contrast");
 </script>
 
 <template>
   <div class="app">
-    <el-tabs v-model="activeTab" type="border-card">
-      <ContrastTab />
-      <GroupTab />
-    </el-tabs>
+    <ContrastTab />
   </div>
 </template>
 

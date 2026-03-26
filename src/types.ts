@@ -5,13 +5,3 @@ export type ContrastRow = {
   thresholdNumber: string;
   remarks: string;
 };
-
-export type GroupRow = {
-  selected: boolean;
-  group: string;
-  primerNo: string;
-  fuel: string;
-  start: string;
-  end: string;
-};
-
