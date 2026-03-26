@@ -865,6 +865,45 @@ mod tests {
         assert_eq!(row.missing_bits, 0);
         assert_eq!(result.detail_rows.len(), 2);
     }
+
+    #[test]
+    fn normal_process_uses_dynamic_locus_count_per_standard_batch() {
+        let standard_list = vec![
+            dna("STD-A", "L1", 10.0, 11.0, 12.0),
+            dna("STD-A", "L2", 20.0, 21.0, 22.0),
+            dna("STD-B", "L1", 10.0, 11.0, 12.0),
+        ];
+        let sample_list = vec![dna("SAMPLE-1", "L1", 10.0, 11.0, 12.0)];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let result = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            false,
+        );
+
+        assert_eq!(result.summary_rows.len(), 2);
+
+        let std_a_row = result
+            .summary_rows
+            .iter()
+            .find(|row| row.standard_sample_data_batch_code == "STD-A")
+            .expect("STD-A summary row not found");
+        assert_eq!(std_a_row.count, 2);
+        assert_eq!(std_a_row.same_number_bits, 1);
+        assert_eq!(std_a_row.missing_bits, 1);
+
+        let std_b_row = result
+            .summary_rows
+            .iter()
+            .find(|row| row.standard_sample_data_batch_code == "STD-B")
+            .expect("STD-B summary row not found");
+        assert_eq!(std_b_row.count, 1);
+        assert_eq!(std_b_row.same_number_bits, 1);
+        assert_eq!(std_b_row.missing_bits, 0);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

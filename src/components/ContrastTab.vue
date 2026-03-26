@@ -203,7 +203,7 @@ async function deleteAllRows() {
 async function runContrast(row: ContrastRow) {
   try {
     const outputFilePath = await invoke<string>("run_contrast", { row });
-    ElMessage.success(`解析完毕，结果文件：${outputFilePath}（明细见“相同位点/差异位点/缺失位点”sheet）`);
+    ElMessage.success(`解析完毕，结果文件：${outputFilePath}（按标样实际位点动态统计；明细见“相同位点/差异位点/缺失位点”sheet）`);
   } catch (error) {
     ElMessage.error(String(error));
   }
@@ -294,6 +294,10 @@ onBeforeUnmount(() => {
 
       <el-button type="primary" @click="addContrastRow">添加</el-button>
     </div>
+
+    <p class="contrast-hint">
+      说明：标样位点数量支持动态增减，系统会按每个标样批次在 Excel 中实际存在的位点进行对比统计；样本未匹配到的位点会计入“缺失位点”明细。
+    </p>
 
     <el-table
       :data="contrastRows"
@@ -399,6 +403,13 @@ onBeforeUnmount(() => {
   flex: 1 1 0;
   width: 0;
   min-width: 0;
+}
+
+.contrast-hint {
+  margin: 4px 0 10px;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .path-cell {
