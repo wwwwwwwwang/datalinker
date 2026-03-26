@@ -314,7 +314,7 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="查看" width="64">
+      <el-table-column label="查看" width="80">
         <template #default="scope">
           <el-button size="small" @click="openResultPath(scope.row.standardSamplePath)">查看</el-button>
         </template>
@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="查看" width="64">
+      <el-table-column label="查看" width="80">
         <template #default="scope">
           <el-button size="small" @click="openResultPath(scope.row.samplePath)">查看</el-button>
         </template>
@@ -342,7 +342,7 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="查看" width="64">
+      <el-table-column label="查看" width="80">
         <template #default="scope">
           <el-button size="small" @click="openResultPath(scope.row.analysisResultsPath)">查看</el-button>
         </template>
