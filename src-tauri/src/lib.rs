@@ -8,7 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, PhysicalSize, Size};
-use umya_spreadsheet::{self as umya, Worksheet};
+use umya_spreadsheet::{
+    self as umya, Border, HorizontalAlignmentValues, VerticalAlignmentValues, Worksheet,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -753,6 +755,8 @@ fn write_export_sheet(sheet: &mut Worksheet, data: &[ContrastExportRow]) {
         sheet
             .get_cell_mut((col, 2u32))
             .set_value(sub_headers[idx].to_string());
+        apply_export_cell_style(sheet, col, 1, true, true);
+        apply_export_cell_style(sheet, col, 2, true, true);
         sheet
             .get_column_dimension_by_number_mut(&col)
             .set_width(widths[idx]);
@@ -799,7 +803,42 @@ fn write_export_sheet(sheet: &mut Worksheet, data: &[ContrastExportRow]) {
         sheet
             .get_cell_mut((11u32, excel_row))
             .set_value(row.missing_positions.clone());
+        for col in 1u32..=11u32 {
+            apply_export_cell_style(sheet, col, excel_row, false, col >= 8);
+        }
     }
+}
+
+fn apply_export_cell_style(
+    sheet: &mut Worksheet,
+    col: u32,
+    row: u32,
+    bold: bool,
+    wrap_text: bool,
+) {
+    let style = sheet.get_style_mut((col, row));
+    style.get_font_mut().set_name("\u{5B8B}\u{4F53}");
+    style.get_font_mut().set_size(11.0);
+    style.get_font_mut().set_bold(bold);
+
+    let alignment = style.get_alignment_mut();
+    alignment.set_horizontal(HorizontalAlignmentValues::Center);
+    alignment.set_vertical(VerticalAlignmentValues::Center);
+    alignment.set_wrap_text(wrap_text);
+
+    let borders = style.get_borders_mut();
+    borders
+        .get_top_mut()
+        .set_border_style(Border::BORDER_THIN);
+    borders
+        .get_bottom_mut()
+        .set_border_style(Border::BORDER_THIN);
+    borders
+        .get_left_mut()
+        .set_border_style(Border::BORDER_THIN);
+    borders
+        .get_right_mut()
+        .set_border_style(Border::BORDER_THIN);
 }
 
 fn now_millis() -> u128 {
@@ -1196,6 +1235,7 @@ mod tests {
             .map(|row| row.iter().map(cell_to_string).collect())
             .collect();
         assert_eq!(rows[0][0], "\u{6837}\u{54C1}\u{7F16}\u{53F7}");
+        assert_eq!(rows[0][8], "\u{4E0D}\u{5206}\u{5339}\u{914D}\u{4F4D}\u{7F6E}");
         assert_eq!(rows[0][10], "\u{7F3A}\u{5931}\u{4F4D}\u{7F6E}");
         assert_eq!(rows[1][3], "\u{5B8C}\u{5168}\u{5339}\u{914D}");
         assert_eq!(rows[1][4], "\u{4E0D}\u{5206}\u{5339}\u{914D}");
