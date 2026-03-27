@@ -726,7 +726,7 @@ fn write_export_sheet(sheet: &mut Worksheet, data: &[ContrastExportRow]) {
         "\u{5DEE}\u{5F02}\u{4F4D}\u{70B9}\u{6570}",
         "\u{7F3A}\u{5931}\u{4F4D}\u{70B9}\u{6570}",
         "\u{76F8}\u{540C}\u{4F4D}\u{70B9}\u{4F4D}\u{7F6E}",
-        "\u{4E0D}\u{5206}\u{5339}\u{914D}\u{4F4D}\u{7F6E}",
+        "\u{4E0D}\u{5B8C}\u{5168}\u{76F8}\u{540C}\u{4F4D}\u{7F6E}",
         "\u{5DEE}\u{5F02}\u{4F4D}\u{7F6E}",
         "\u{7F3A}\u{5931}\u{4F4D}\u{7F6E}",
     ];
