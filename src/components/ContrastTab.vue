@@ -1,11 +1,11 @@
-<script lang="ts">
+﻿<script lang="ts">
 export default {
   name: "ContrastTab"
 };
 </script>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -18,6 +18,11 @@ type ContextMenuState = {
   visible: boolean;
   x: number;
   y: number;
+};
+
+type RunTask = {
+  rowKey: string;
+  rowSnapshot: ContrastRow;
 };
 
 const contrastForm = reactive({
@@ -34,6 +39,95 @@ const contextMenu = reactive<ContextMenuState>({
   x: 0,
   y: 0
 });
+
+const pendingTasks = ref<RunTask[]>([]);
+const activeTask = ref<RunTask | null>(null);
+const isDrainingQueue = ref(false);
+const queueCount = computed(() => pendingTasks.value.length + (activeTask.value ? 1 : 0));
+
+const rowKeyMap = new WeakMap<ContrastRow, string>();
+let rowKeySeed = 0;
+
+function ensureRowKey(row: ContrastRow) {
+  const existing = rowKeyMap.get(row);
+  if (existing) {
+    return existing;
+  }
+  rowKeySeed += 1;
+  const key = `row-${rowKeySeed}`;
+  rowKeyMap.set(row, key);
+  return key;
+}
+
+function cloneRowSnapshot(row: ContrastRow): ContrastRow {
+  return {
+    standardSamplePath: row.standardSamplePath,
+    samplePath: row.samplePath,
+    analysisResultsPath: row.analysisResultsPath,
+    thresholdNumber: row.thresholdNumber,
+    remarks: row.remarks
+  };
+}
+
+function isRowRunning(row: ContrastRow) {
+  const key = ensureRowKey(row);
+  return activeTask.value?.rowKey === key;
+}
+
+function isRowQueued(row: ContrastRow) {
+  const key = ensureRowKey(row);
+  return pendingTasks.value.some((task) => task.rowKey === key);
+}
+
+function removePendingTaskByRow(row: ContrastRow) {
+  const key = ensureRowKey(row);
+  const before = pendingTasks.value.length;
+  pendingTasks.value = pendingTasks.value.filter((task) => task.rowKey !== key);
+  return before - pendingTasks.value.length;
+}
+
+function enqueueRunTask(row: ContrastRow) {
+  if (isRowRunning(row) || isRowQueued(row)) {
+    return false;
+  }
+
+  pendingTasks.value = [
+    ...pendingTasks.value,
+    {
+      rowKey: ensureRowKey(row),
+      rowSnapshot: cloneRowSnapshot(row)
+    }
+  ];
+  return true;
+}
+
+async function drainQueue() {
+  if (isDrainingQueue.value) {
+    return;
+  }
+  isDrainingQueue.value = true;
+
+  try {
+    while (pendingTasks.value.length > 0) {
+      const [current, ...rest] = pendingTasks.value;
+      pendingTasks.value = rest;
+      activeTask.value = current;
+
+      try {
+        const outputFilePath = await invoke<string>("run_contrast", { row: current.rowSnapshot });
+        ElMessage.success(
+          `解析完毕，结果文件：${outputFilePath}（汇总含相同/不完全相同/差异/缺失位点数量与位置）`
+        );
+      } catch (error) {
+        ElMessage.error(String(error));
+      } finally {
+        activeTask.value = null;
+      }
+    }
+  } finally {
+    isDrainingQueue.value = false;
+  }
+}
 
 function showContextMenu(row: ContrastRow, event: MouseEvent) {
   event.preventDefault();
@@ -169,6 +263,12 @@ async function deleteSelectedRow() {
   if (!currentContrastRow.value) {
     return;
   }
+
+  const removedTasks = removePendingTaskByRow(currentContrastRow.value);
+  if (removedTasks > 0) {
+    ElMessage.info("已从队列移除该任务");
+  }
+
   const index = contrastRows.value.indexOf(currentContrastRow.value);
   if (index >= 0) {
     contrastRows.value.splice(index, 1);
@@ -194,6 +294,11 @@ async function copySelectedRow() {
 }
 
 async function deleteAllRows() {
+  if (pendingTasks.value.length > 0) {
+    pendingTasks.value = [];
+    ElMessage.info("已清空等待队列，当前运行任务将继续执行");
+  }
+
   contrastRows.value = [];
   currentContrastRow.value = null;
   await saveContrastConfig({ silent: true });
@@ -201,12 +306,18 @@ async function deleteAllRows() {
 }
 
 async function runContrast(row: ContrastRow) {
-  try {
-    const outputFilePath = await invoke<string>("run_contrast", { row });
-    ElMessage.success(`解析完毕，结果文件：${outputFilePath}（按标样实际位点动态统计；明细见“相同位点/差异位点/缺失位点”sheet）`);
-  } catch (error) {
-    ElMessage.error(String(error));
+  const enqueued = enqueueRunTask(row);
+  if (!enqueued) {
+    ElMessage.info("该配置已在队列中，请勿重复提交");
+    return;
   }
+
+  const tasksAhead = (activeTask.value ? 1 : 0) + pendingTasks.value.length - 1;
+  if (tasksAhead > 0) {
+    ElMessage.info(`已加入运行队列，前方还有 ${tasksAhead} 个任务`);
+  }
+
+  void drainQueue();
 }
 
 function resolveParentDir(path: string) {
@@ -296,7 +407,10 @@ onBeforeUnmount(() => {
     </div>
 
     <p class="contrast-hint">
-      说明：标样位点数量支持动态增减，系统会按每个标样批次在 Excel 中实际存在的位点进行对比统计；样本未匹配到的位点会计入“缺失位点”明细。
+      说明：标样位点数量支持动态增减；汇总结果会输出相同/不完全相同/差异/缺失位点的数量与位点位置，样本未匹配到的标样位点会计入“缺失位点”。
+    </p>
+    <p v-if="queueCount > 0" class="contrast-queue">
+      当前队列：{{ queueCount }}（运行中 {{ activeTask ? 1 : 0 }}，排队 {{ pendingTasks.length }}）
     </p>
 
     <el-table
@@ -353,9 +467,17 @@ onBeforeUnmount(() => {
           <el-input v-model="scope.row.thresholdNumber" size="small" @change="onContrastRowEdited" />
         </template>
       </el-table-column>
-      <el-table-column label="运行" width="72">
+      <el-table-column label="运行" width="84">
         <template #default="scope">
-          <el-button size="small" type="primary" @click="runContrast(scope.row)">运行</el-button>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="isRowRunning(scope.row)"
+            :disabled="isRowRunning(scope.row) || isRowQueued(scope.row)"
+            @click="runContrast(scope.row)"
+          >
+            {{ isRowRunning(scope.row) ? "运行中" : isRowQueued(scope.row) ? "排队中" : "运行" }}
+          </el-button>
         </template>
       </el-table-column>
       <el-table-column label="备注" min-width="120">
@@ -406,8 +528,15 @@ onBeforeUnmount(() => {
 }
 
 .contrast-hint {
-  margin: 4px 0 10px;
+  margin: 4px 0 6px;
   color: #606266;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.contrast-queue {
+  margin: 0 0 10px;
+  color: #409eff;
   font-size: 13px;
   line-height: 1.45;
 }

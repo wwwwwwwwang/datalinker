@@ -47,8 +47,13 @@ struct ContrastResultRow {
     standard_sample_data_batch_code: String,
     count: usize,
     same_number_bits: usize,
+    partial_same_bits: usize,
     different_bits: usize,
     missing_bits: usize,
+    same_positions: String,
+    partial_same_positions: String,
+    different_positions: String,
+    missing_positions: String,
 }
 
 #[derive(Clone)]
@@ -73,6 +78,11 @@ struct ContrastProcessResult {
 
 type BatchDataMap = HashMap<String, Vec<DnaData>>;
 type BatchLabelMap = HashMap<String, HashMap<String, Vec<DnaData>>>;
+
+const RESULT_MISSING: i32 = 0;
+const RESULT_SAME: i32 = 1;
+const RESULT_PARTIAL_SAME: i32 = 2;
+const RESULT_DIFFERENT: i32 = 3;
 
 const CONFIG_DIR_NAME: &str = "xJavaFxTool";
 const CONTRAST_CONFIG_FILE: &str = "dataProcess.properties";
@@ -104,7 +114,11 @@ fn cleanup_legacy_group_store<R: tauri::Runtime>(app: &tauri::App<R>) {
         store_paths.push(app_data_dir.join("datalinker.store.json"));
     }
     if let Some(app_data_dir) = std::env::var_os("APPDATA") {
-        store_paths.push(PathBuf::from(app_data_dir).join("com.admin.datalinker").join("datalinker.store.json"));
+        store_paths.push(
+            PathBuf::from(app_data_dir)
+                .join("com.admin.datalinker")
+                .join("datalinker.store.json"),
+        );
     }
     store_paths.sort();
     store_paths.dedup();
@@ -284,7 +298,7 @@ fn is_blank(value: &str) -> bool {
     value.trim().is_empty()
 }
 
-fn convert_data(value: Option<&String>) -> f64 {
+fn convert_data(value: Option<&str>) -> f64 {
     let Some(raw) = value else { return 0.0 };
     if is_blank(raw) {
         return 0.0;
@@ -292,8 +306,13 @@ fn convert_data(value: Option<&String>) -> f64 {
     raw.parse::<f64>().unwrap_or(0.0)
 }
 
+fn is_triplet_missing(a: f64, b: f64, c: f64) -> bool {
+    a == 0.0 && b == 0.0 && c == 0.0
+}
+
 fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
-    let mut workbook = open_workbook_auto(path).map_err(|e| format!("Parse Excel failed: {}", e))?;
+    let mut workbook =
+        open_workbook_auto(path).map_err(|e| format!("Parse Excel failed: {}", e))?;
     let range = workbook
         .worksheet_range_at(0)
         .ok_or_else(|| "Parse Excel failed, please check excel data".to_string())?
@@ -307,32 +326,24 @@ fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
             tab_map.insert(idx, cell_to_string(cell));
         }
     }
+    let mut tab_indices: Vec<usize> = tab_map.keys().cloned().collect();
+    tab_indices.sort_unstable();
 
     let mut dna_data_list = Vec::new();
     for row in rows {
-        let mut row_map: HashMap<usize, String> = HashMap::new();
-        for (idx, cell) in row.iter().enumerate() {
-            let value = cell_to_string(cell);
-            if is_blank(&value) {
-                continue;
-            }
-            row_map.insert(idx, value);
+        let batch_code = row.get(1).map(cell_to_string).unwrap_or_default();
+        if is_blank(&batch_code) {
+            continue;
         }
 
-        let batch_code = row
-            .get(1)
-            .map(cell_to_string)
-            .unwrap_or_default();
-
-        let mut keys: Vec<usize> = row_map.keys().cloned().collect();
-        keys.sort_unstable();
-        for idx in keys {
-            if (idx + 1) % 3 != 0 {
-                continue;
-            }
-            let a = convert_data(row_map.get(&idx));
-            let b = convert_data(row_map.get(&(idx + 1)));
-            let c = convert_data(row_map.get(&(idx + 2)));
+        for idx in &tab_indices {
+            let idx = *idx;
+            let a_raw = row.get(idx).map(cell_to_string);
+            let b_raw = row.get(idx + 1).map(cell_to_string);
+            let c_raw = row.get(idx + 2).map(cell_to_string);
+            let a = convert_data(a_raw.as_deref());
+            let b = convert_data(b_raw.as_deref());
+            let c = convert_data(c_raw.as_deref());
             let label = tab_map.get(&idx).cloned().unwrap_or_default();
             dna_data_list.push(DnaData {
                 batch_code: batch_code.clone(),
@@ -378,7 +389,7 @@ fn get_compare_a(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
     let a1 = sample.a;
     let b1 = sample.b;
     let c1 = sample.c;
-    if a1 + b1 + c1 == 0.0 {
+    if is_triplet_missing(a1, b1, c1) {
         return 0;
     }
     if a1 >= a - threshold as f64 && a1 <= a + threshold as f64 {
@@ -400,7 +411,7 @@ fn get_compare_b(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
     let a1 = sample.a;
     let b1 = sample.b;
     let c1 = sample.c;
-    if a1 + b1 + c1 == 0.0 {
+    if is_triplet_missing(a1, b1, c1) {
         return 0;
     }
     if b1 >= a - threshold as f64 && b1 <= a + threshold as f64 {
@@ -422,7 +433,7 @@ fn get_compare_c(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
     let a1 = sample.a;
     let b1 = sample.b;
     let c1 = sample.c;
-    if a1 + b1 + c1 == 0.0 {
+    if is_triplet_missing(a1, b1, c1) {
         return 0;
     }
     if c1 >= a - threshold as f64 && c1 <= a + threshold as f64 {
@@ -437,38 +448,58 @@ fn get_compare_c(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
     0
 }
 
-fn get_label_result(a: i32, b: i32, c: i32) -> i32 {
+fn get_label_result(a: i32, b: i32, c: i32, standard_missing: bool, sample_missing: bool) -> i32 {
+    if standard_missing || sample_missing {
+        return RESULT_MISSING;
+    }
     let count = a + b + c;
     if count == 0 {
-        return 0;
+        return RESULT_DIFFERENT;
     }
     if count > 1 {
-        return 1;
+        return RESULT_SAME;
     }
-    2
+    RESULT_PARTIAL_SAME
 }
 
 fn real_compare(standard: &DnaData, sample: &DnaData) -> i32 {
-    if standard.a == 0.0 && standard.b == 0.0 && standard.c == 0.0 {
-        return 0;
+    if is_triplet_missing(standard.a, standard.b, standard.c)
+        || is_triplet_missing(sample.a, sample.b, sample.c)
+    {
+        return RESULT_MISSING;
     }
     let mut standard_arr = vec![standard.a, standard.b, standard.c];
     standard_arr.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mut sample_arr = vec![sample.a, sample.b, sample.c];
     sample_arr.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if standard_arr == sample_arr {
-        1
+        RESULT_SAME
     } else {
-        2
+        RESULT_DIFFERENT
     }
 }
 
 fn result_category(result: i32) -> &'static str {
     match result {
-        1 => "\u{76F8}\u{540C}",
-        2 => "\u{5DEE}\u{5F02}",
+        RESULT_SAME => "\u{76F8}\u{540C}",
+        RESULT_PARTIAL_SAME => "\u{4E0D}\u{5B8C}\u{5168}\u{76F8}\u{540C}",
+        RESULT_DIFFERENT => "\u{5DEE}\u{5F02}",
         _ => "\u{7F3A}\u{5931}",
     }
+}
+
+fn collect_positions(items: &[LabelResult], target_result: i32) -> String {
+    let mut labels: Vec<String> = Vec::new();
+    for item in items {
+        if item.result != target_result {
+            continue;
+        }
+        if labels.iter().any(|existing| existing == &item.label) {
+            continue;
+        }
+        labels.push(item.label.clone());
+    }
+    labels.join("/")
 }
 
 fn normal_process(
@@ -477,10 +508,7 @@ fn normal_process(
     sample_batch_map: &BatchLabelMap,
     is_paternity: bool,
 ) -> ContrastProcessResult {
-    let threshold_number = contrast_row
-        .threshold_number
-        .parse::<i32>()
-        .unwrap_or(0);
+    let threshold_number = contrast_row.threshold_number.parse::<i32>().unwrap_or(0);
     let contrast_type = if is_paternity {
         "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}".to_string()
     } else {
@@ -508,13 +536,25 @@ fn normal_process(
 
             let mut items: Vec<LabelResult> = Vec::with_capacity(standard_items.len());
             for standard in standard_items {
-                if let Some(sample_rows) = sample_label_map.and_then(|labels| labels.get(&standard.label)) {
+                if let Some(sample_rows) =
+                    sample_label_map.and_then(|labels| labels.get(&standard.label))
+                {
                     for sample_data in sample_rows {
                         let result = if is_paternity {
+                            let sample_missing =
+                                is_triplet_missing(sample_data.a, sample_data.b, sample_data.c);
+                            let standard_missing =
+                                is_triplet_missing(standard.a, standard.b, standard.c);
                             let compare_a = get_compare_a(standard, sample_data, threshold_number);
                             let compare_b = get_compare_b(standard, sample_data, threshold_number);
                             let compare_c = get_compare_c(standard, sample_data, threshold_number);
-                            get_label_result(compare_a, compare_b, compare_c)
+                            get_label_result(
+                                compare_a,
+                                compare_b,
+                                compare_c,
+                                standard_missing,
+                                sample_missing,
+                            )
                         } else {
                             real_compare(standard, sample_data)
                         };
@@ -534,7 +574,7 @@ fn normal_process(
 
                 items.push(LabelResult {
                     label: standard.label.clone(),
-                    result: 0,
+                    result: RESULT_MISSING,
                     standard_a: standard.a,
                     standard_b: standard.b,
                     standard_c: standard.c,
@@ -544,16 +584,28 @@ fn normal_process(
                 });
             }
 
-            let same_count = items.iter().filter(|r| r.result == 1).count();
-            let diff_count = items.iter().filter(|r| r.result == 2).count();
-            let missing_count = items.iter().filter(|r| r.result == 0).count();
+            let same_count = items.iter().filter(|r| r.result == RESULT_SAME).count();
+            let partial_count = items
+                .iter()
+                .filter(|r| r.result == RESULT_PARTIAL_SAME)
+                .count();
+            let diff_count = items
+                .iter()
+                .filter(|r| r.result == RESULT_DIFFERENT)
+                .count();
+            let missing_count = items.iter().filter(|r| r.result == RESULT_MISSING).count();
             contrast_results.push(ContrastResultRow {
                 simple_data_batch_code: Some(sample_batch_code.clone()),
                 standard_sample_data_batch_code: standard_batch_code.clone(),
                 count: items.len(),
                 same_number_bits: same_count,
+                partial_same_bits: partial_count,
                 different_bits: diff_count,
                 missing_bits: missing_count,
+                same_positions: collect_positions(&items, RESULT_SAME),
+                partial_same_positions: collect_positions(&items, RESULT_PARTIAL_SAME),
+                different_positions: collect_positions(&items, RESULT_DIFFERENT),
+                missing_positions: collect_positions(&items, RESULT_MISSING),
             });
 
             for item in items {
@@ -615,26 +667,141 @@ fn normal_process(
     }
 }
 
+fn set_thin_black_border(style: &mut umya::Style) {
+    let borders = style.get_borders_mut();
+    {
+        let left = borders.get_left_mut();
+        left.set_border_style(umya::Border::BORDER_THIN);
+        left.get_color_mut().set_argb("00000000");
+    }
+    {
+        let right = borders.get_right_mut();
+        right.set_border_style(umya::Border::BORDER_THIN);
+        right.get_color_mut().set_argb("00000000");
+    }
+    {
+        let top = borders.get_top_mut();
+        top.set_border_style(umya::Border::BORDER_THIN);
+        top.get_color_mut().set_argb("00000000");
+    }
+    {
+        let bottom = borders.get_bottom_mut();
+        bottom.set_border_style(umya::Border::BORDER_THIN);
+        bottom.get_color_mut().set_argb("00000000");
+    }
+}
+
+fn set_header_style(sheet: &mut Worksheet, col: u32, row: u32, background: &str, red_font: bool) {
+    let style = sheet.get_style_mut((col, row));
+    style.set_background_color(background);
+    set_thin_black_border(style);
+    let alignment = style.get_alignment_mut();
+    alignment.set_horizontal(umya::HorizontalAlignmentValues::Center);
+    alignment.set_vertical(umya::VerticalAlignmentValues::Center);
+    alignment.set_wrap_text(true);
+    let font = style.get_font_mut();
+    font.set_bold(true);
+    font.set_size(14.0);
+    if red_font {
+        font.get_color_mut().set_argb("00FF0000");
+    } else {
+        font.get_color_mut().set_argb("00000000");
+    }
+}
+
+fn set_data_style(sheet: &mut Worksheet, col: u32, row: u32) {
+    let style = sheet.get_style_mut((col, row));
+    style.set_background_color("00FFFFFF");
+    set_thin_black_border(style);
+    let alignment = style.get_alignment_mut();
+    if col <= 2 {
+        alignment.set_horizontal(umya::HorizontalAlignmentValues::Left);
+        alignment.set_wrap_text(false);
+    } else {
+        alignment.set_horizontal(umya::HorizontalAlignmentValues::Center);
+        alignment.set_wrap_text(true);
+    }
+    alignment.set_vertical(umya::VerticalAlignmentValues::Center);
+    let font = style.get_font_mut();
+    font.set_bold(false);
+    font.set_size(11.0);
+    font.get_color_mut().set_argb("00000000");
+}
+
 fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
     let headers = [
         "\u{6837}\u{54C1}\u{7F16}\u{53F7}",
         "\u{6807}\u{4F4D}\u{7F16}\u{53F7}",
-        "\u{6D4B}\u{5B9A}\u{4F4D}\u{70B9}\u{6570}",
-        "\u{76F8}\u{540C}\u{4F4D}\u{70B9}\u{6570}",
-        "\u{5DEE}\u{5F02}\u{4F4D}\u{70B9}\u{6570}",
-        "\u{7F3A}\u{5931}\u{4F4D}\u{70B9}\u{6570}",
+        "\u{6D4B}\u{5B9A}\u{4F4D}\n\u{70B9}\u{6570}",
+        "\u{76F8}\u{540C}\u{4F4D}\n\u{70B9}\u{6570}",
+        "\u{4E0D}\u{5B8C}\u{5168}\n\u{76F8}\u{540C}\u{4F4D}\n\u{70B9}\u{6570}",
+        "\u{5DEE}\u{5F02}\u{4F4D}\n\u{70B9}\u{6570}",
+        "\u{7F3A}\u{5931}\u{4F4D}\n\u{70B9}\u{6570}",
+        "\u{76F8}\u{540C}\u{4F4D}\u{70B9}\u{4F4D}\n\u{7F6E}",
+        "\u{4E0D}\u{5B8C}\u{5168}\n\u{76F8}\u{540C}\u{4F4D}\n\u{70B9}\u{4F4D}\u{7F6E}",
+        "\u{5DEE}\u{5F02}\u{4F4D}\n\u{70B9}\u{4F4D}\u{7F6E}",
+        "\u{7F3A}\u{5931}\u{4F4D}\n\u{70B9}\u{4F4D}\u{7F6E}",
     ];
+    let sub_headers = [
+        "",
+        "",
+        "",
+        "\u{5B8C}\u{5168}\u{5339}\n\u{914D}",
+        "\u{4E0D}\u{5B8C}\u{5168}\n\u{5339}\u{914D}",
+        "\u{5B8C}\u{5168}\u{4E0D}\n\u{540C}",
+        "\u{6807}\u{6837}\u{4F4D}\n\u{70B9}\u{7F3A}\u{5931}",
+        "P**/P**...",
+        "",
+        "",
+        "",
+    ];
+
+    // Layout close to template: two-row header, grouped colors, merged blank block.
+    sheet.add_merge_cells("A2:C2");
+    sheet.get_row_dimension_mut(&1u32).set_height(48.0);
+    sheet.get_row_dimension_mut(&2u32).set_height(32.0);
+    sheet.get_column_dimension_mut("A").set_width(45.0);
+    sheet.get_column_dimension_mut("B").set_width(43.0);
+    sheet.get_column_dimension_mut("C").set_width(10.0);
+    sheet.get_column_dimension_mut("D").set_width(10.0);
+    sheet.get_column_dimension_mut("E").set_width(10.0);
+    sheet.get_column_dimension_mut("F").set_width(10.0);
+    sheet.get_column_dimension_mut("G").set_width(10.0);
+    sheet.get_column_dimension_mut("H").set_width(15.0);
+    sheet.get_column_dimension_mut("I").set_width(10.0);
+    sheet.get_column_dimension_mut("J").set_width(10.0);
+    sheet.get_column_dimension_mut("K").set_width(10.0);
+
     for (idx, header) in headers.iter().enumerate() {
         sheet
             .get_cell_mut(((idx + 1) as u32, 1u32))
             .set_value(header.to_string());
     }
-    for (row_index, row) in data.iter().enumerate() {
-        let excel_row = (row_index + 2) as u32;
-        let simple_code = row.simple_data_batch_code.clone().unwrap_or_default();
+    for (idx, sub_header) in sub_headers.iter().enumerate() {
         sheet
-            .get_cell_mut((1u32, excel_row))
-            .set_value(simple_code);
+            .get_cell_mut(((idx + 1) as u32, 2u32))
+            .set_value(sub_header.to_string());
+    }
+
+    // Header styles.
+    for col in 1u32..=3u32 {
+        set_header_style(sheet, col, 1, "00BFBFBF", false);
+        set_header_style(sheet, col, 2, "00BFBFBF", false);
+    }
+    for col in 4u32..=8u32 {
+        set_header_style(sheet, col, 1, "00CCFF66", false);
+        set_header_style(sheet, col, 2, "00CCFF66", true);
+    }
+    for col in 9u32..=11u32 {
+        set_header_style(sheet, col, 1, "00FFFF00", false);
+        set_header_style(sheet, col, 2, "00FFFF00", col == 9);
+    }
+
+    for (row_index, row) in data.iter().enumerate() {
+        let excel_row = (row_index + 3) as u32;
+        sheet.get_row_dimension_mut(&excel_row).set_height(24.0);
+        let simple_code = row.simple_data_batch_code.clone().unwrap_or_default();
+        sheet.get_cell_mut((1u32, excel_row)).set_value(simple_code);
         sheet
             .get_cell_mut((2u32, excel_row))
             .set_value(row.standard_sample_data_batch_code.clone());
@@ -646,10 +813,29 @@ fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
             .set_value(row.same_number_bits.to_string());
         sheet
             .get_cell_mut((5u32, excel_row))
-            .set_value(row.different_bits.to_string());
+            .set_value(row.partial_same_bits.to_string());
         sheet
             .get_cell_mut((6u32, excel_row))
+            .set_value(row.different_bits.to_string());
+        sheet
+            .get_cell_mut((7u32, excel_row))
             .set_value(row.missing_bits.to_string());
+        sheet
+            .get_cell_mut((8u32, excel_row))
+            .set_value(row.same_positions.clone());
+        sheet
+            .get_cell_mut((9u32, excel_row))
+            .set_value(row.partial_same_positions.clone());
+        sheet
+            .get_cell_mut((10u32, excel_row))
+            .set_value(row.different_positions.clone());
+        sheet
+            .get_cell_mut((11u32, excel_row))
+            .set_value(row.missing_positions.clone());
+
+        for col in 1u32..=11u32 {
+            set_data_style(sheet, col, excel_row);
+        }
     }
 }
 
@@ -719,7 +905,10 @@ fn write_contrast_detail_sheet(sheet: &mut Worksheet, data: &[ContrastDetailRow]
     }
 }
 
-fn filter_detail_rows_by_category(data: &[ContrastDetailRow], category: &str) -> Vec<ContrastDetailRow> {
+fn filter_detail_rows_by_category(
+    data: &[ContrastDetailRow],
+    category: &str,
+) -> Vec<ContrastDetailRow> {
     data.iter()
         .filter(|row| row.category == category)
         .cloned()
@@ -761,21 +950,20 @@ fn save_contrast_config(rows: Vec<ContrastRow>, path: Option<String>) -> Result<
     Ok(file.to_string_lossy().to_string())
 }
 
-#[tauri::command]
-fn run_contrast(row: ContrastRow) -> Result<String, String> {
+fn run_contrast_internal(row: ContrastRow) -> Result<String, String> {
     let standard_list = get_excel_data(Path::new(&row.standard_sample_path))?;
     let sample_list = get_excel_data(Path::new(&row.sample_path))?;
     if standard_list.is_empty() || sample_list.is_empty() {
-        return Err("\u{89E3}\u{6790}Excel\u{5F02}\u{5E38},\u{8BF7}\u{68C0}\u{67E5}Excel\u{6570}\u{636E}".to_string());
+        return Err(
+            "\u{89E3}\u{6790}Excel\u{5F02}\u{5E38},\u{8BF7}\u{68C0}\u{67E5}Excel\u{6570}\u{636E}"
+                .to_string(),
+        );
     }
 
     let standard_batch_map = build_batch_data_map(&standard_list);
     let sample_batch_map = build_batch_label_map(&sample_list);
 
     let normal_result = normal_process(&row, &standard_batch_map, &sample_batch_map, true);
-    let real_result = normal_process(&row, &standard_batch_map, &sample_batch_map, false);
-    let mut detail_rows = normal_result.detail_rows.clone();
-    detail_rows.extend(real_result.detail_rows.clone());
 
     let output_dir = Path::new(&row.analysis_results_path);
     let file_name = format!("\u{89E3}\u{6790}\u{7ED3}\u{679C}_{}.xlsx", now_millis());
@@ -784,36 +972,21 @@ fn run_contrast(row: ContrastRow) -> Result<String, String> {
 
     let mut book = umya::new_file();
     if let Some(sheet) = book.get_sheet_by_name_mut("Sheet1") {
-        sheet.set_name("\u{4EB2}\u{5B50}\u{9274}\u{5B9A}");
+        sheet.set_name("\u{6BD4}\u{5BF9}\u{7ED3}\u{679C}");
         write_contrast_sheet(sheet, &normal_result.summary_rows);
-    }
-    let _ = book.new_sheet("\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}");
-    if let Some(sheet) = book.get_sheet_by_name_mut("\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}") {
-        write_contrast_sheet(sheet, &real_result.summary_rows);
-    }
-    let same_rows = filter_detail_rows_by_category(&detail_rows, "\u{76F8}\u{540C}");
-    let diff_rows = filter_detail_rows_by_category(&detail_rows, "\u{5DEE}\u{5F02}");
-    let missing_rows = filter_detail_rows_by_category(&detail_rows, "\u{7F3A}\u{5931}");
-
-    let _ = book.new_sheet("\u{76F8}\u{540C}\u{4F4D}\u{70B9}");
-    if let Some(sheet) = book.get_sheet_by_name_mut("\u{76F8}\u{540C}\u{4F4D}\u{70B9}") {
-        write_contrast_detail_sheet(sheet, &same_rows);
-    }
-
-    let _ = book.new_sheet("\u{5DEE}\u{5F02}\u{4F4D}\u{70B9}");
-    if let Some(sheet) = book.get_sheet_by_name_mut("\u{5DEE}\u{5F02}\u{4F4D}\u{70B9}") {
-        write_contrast_detail_sheet(sheet, &diff_rows);
-    }
-
-    let _ = book.new_sheet("\u{7F3A}\u{5931}\u{4F4D}\u{70B9}");
-    if let Some(sheet) = book.get_sheet_by_name_mut("\u{7F3A}\u{5931}\u{4F4D}\u{70B9}") {
-        write_contrast_detail_sheet(sheet, &missing_rows);
     }
 
     umya::writer::xlsx::write(&book, &output_path)
         .map_err(|e| format!("\u{5199}\u{5165}\u{7ED3}\u{679C}\u{5931}\u{8D25}: {}", e))?;
 
     Ok(output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn run_contrast(row: ContrastRow) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || run_contrast_internal(row))
+        .await
+        .map_err(|e| format!("Run contrast task failed: {}", e))?
 }
 
 #[cfg(test)]
@@ -861,8 +1034,13 @@ mod tests {
         let row = &result.summary_rows[0];
         assert_eq!(row.count, 2);
         assert_eq!(row.same_number_bits, 1);
+        assert_eq!(row.partial_same_bits, 0);
         assert_eq!(row.different_bits, 1);
         assert_eq!(row.missing_bits, 0);
+        assert_eq!(row.same_positions, "D8S1179");
+        assert_eq!(row.partial_same_positions, "");
+        assert_eq!(row.different_positions, "D8S1179");
+        assert_eq!(row.missing_positions, "");
         assert_eq!(result.detail_rows.len(), 2);
     }
 
@@ -893,7 +1071,13 @@ mod tests {
             .expect("STD-A summary row not found");
         assert_eq!(std_a_row.count, 2);
         assert_eq!(std_a_row.same_number_bits, 1);
+        assert_eq!(std_a_row.partial_same_bits, 0);
+        assert_eq!(std_a_row.different_bits, 0);
         assert_eq!(std_a_row.missing_bits, 1);
+        assert_eq!(std_a_row.same_positions, "L1");
+        assert_eq!(std_a_row.partial_same_positions, "");
+        assert_eq!(std_a_row.different_positions, "");
+        assert_eq!(std_a_row.missing_positions, "L2");
 
         let std_b_row = result
             .summary_rows
@@ -902,7 +1086,155 @@ mod tests {
             .expect("STD-B summary row not found");
         assert_eq!(std_b_row.count, 1);
         assert_eq!(std_b_row.same_number_bits, 1);
+        assert_eq!(std_b_row.partial_same_bits, 0);
+        assert_eq!(std_b_row.different_bits, 0);
         assert_eq!(std_b_row.missing_bits, 0);
+        assert_eq!(std_b_row.same_positions, "L1");
+        assert_eq!(std_b_row.partial_same_positions, "");
+        assert_eq!(std_b_row.different_positions, "");
+        assert_eq!(std_b_row.missing_positions, "");
+    }
+
+    #[test]
+    fn normal_process_paternity_supports_partial_diff_missing_and_positions() {
+        let standard_list = vec![
+            dna("STD-1", "L-SAME", 10.0, 20.0, 30.0),
+            dna("STD-1", "L-PARTIAL", 10.0, 20.0, 30.0),
+            dna("STD-1", "L-DIFF", 10.0, 20.0, 30.0),
+            dna("STD-1", "L-MISSING", 10.0, 20.0, 30.0),
+        ];
+        let sample_list = vec![
+            dna("SAMPLE-1", "L-SAME", 10.0, 20.0, 30.0),
+            dna("SAMPLE-1", "L-PARTIAL", 30.0, 90.0, 90.0),
+            dna("SAMPLE-1", "L-DIFF", 90.0, 91.0, 92.0),
+        ];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let result = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            true,
+        );
+
+        assert_eq!(result.summary_rows.len(), 1);
+        let row = &result.summary_rows[0];
+        assert_eq!(row.count, 4);
+        assert_eq!(row.same_number_bits, 1);
+        assert_eq!(row.partial_same_bits, 1);
+        assert_eq!(row.different_bits, 1);
+        assert_eq!(row.missing_bits, 1);
+        assert_eq!(row.same_positions, "L-SAME");
+        assert_eq!(row.partial_same_positions, "L-PARTIAL");
+        assert_eq!(row.different_positions, "L-DIFF");
+        assert_eq!(row.missing_positions, "L-MISSING");
+    }
+
+    #[test]
+    fn get_excel_data_keeps_blank_triplet_as_zero_and_skips_blank_batch_rows() {
+        let mut book = umya::new_file();
+        let sheet = book
+            .get_sheet_by_name_mut("Sheet1")
+            .expect("default sheet should exist");
+
+        // Keep column alignment stable for calamine row indexing.
+        sheet.get_cell_mut((1u32, 1u32)).set_value("INDEX");
+        // Header: locus labels are at every 3rd column (C/F/...).
+        sheet.get_cell_mut((3u32, 1u32)).set_value("L1");
+        sheet.get_cell_mut((6u32, 1u32)).set_value("L2");
+
+        // Data row with a valid batch code:
+        // L1 is fully blank and should still be parsed as 0/0/0.
+        sheet.get_cell_mut((2u32, 2u32)).set_value("BATCH-1");
+        sheet.get_cell_mut((6u32, 2u32)).set_value("12");
+        sheet.get_cell_mut((7u32, 2u32)).set_value("13");
+        sheet.get_cell_mut((8u32, 2u32)).set_value("14");
+
+        // Row with no batch code should be skipped entirely.
+        sheet.get_cell_mut((3u32, 3u32)).set_value("99");
+        sheet.get_cell_mut((4u32, 3u32)).set_value("98");
+        sheet.get_cell_mut((5u32, 3u32)).set_value("97");
+
+        let temp_file = std::env::temp_dir().join(format!(
+            "datalinker_parse_regression_{}_{}.xlsx",
+            std::process::id(),
+            now_millis()
+        ));
+        umya::writer::xlsx::write(&book, &temp_file)
+            .expect("failed to create temporary regression workbook");
+
+        let parsed = get_excel_data(&temp_file).expect("failed to parse test workbook");
+
+        let _ = fs::remove_file(&temp_file);
+
+        assert_eq!(parsed.len(), 2, "both loci should be counted for BATCH-1");
+        let parsed_batches: Vec<String> = parsed.iter().map(|item| item.batch_code.clone()).collect();
+        assert!(
+            parsed_batches.iter().all(|item| item.trim() == "BATCH-1"),
+            "rows with blank batch code must be skipped, actual batch codes: {:?}",
+            parsed_batches
+        );
+
+        let l1 = parsed
+            .iter()
+            .find(|item| item.label == "L1")
+            .expect("L1 should exist even when triplet is blank");
+        assert_eq!(l1.a, 0.0);
+        assert_eq!(l1.b, 0.0);
+        assert_eq!(l1.c, 0.0);
+
+        let l2 = parsed
+            .iter()
+            .find(|item| item.label == "L2")
+            .expect("L2 should be parsed from provided values");
+        assert_eq!(l2.a, 12.0);
+        assert_eq!(l2.b, 13.0);
+        assert_eq!(l2.c, 14.0);
+    }
+
+    #[test]
+    fn paternity_treats_standard_zero_triplet_as_missing_by_column_meaning() {
+        let standard_list = vec![dna("STD-1", "L1", 0.0, 0.0, 0.0)];
+        let sample_list = vec![dna("SAMPLE-1", "L1", 10.0, 11.0, 12.0)];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let result = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            true,
+        );
+
+        let row = &result.summary_rows[0];
+        assert_eq!(row.same_number_bits, 0);
+        assert_eq!(row.partial_same_bits, 0);
+        assert_eq!(row.different_bits, 0);
+        assert_eq!(row.missing_bits, 1);
+        assert_eq!(row.missing_positions, "L1");
+    }
+
+    #[test]
+    fn real_compare_treats_zero_triplet_as_missing_by_column_meaning() {
+        let standard_list = vec![dna("STD-1", "L1", 10.0, 11.0, 12.0)];
+        let sample_list = vec![dna("SAMPLE-1", "L1", 0.0, 0.0, 0.0)];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let result = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            false,
+        );
+
+        let row = &result.summary_rows[0];
+        assert_eq!(row.same_number_bits, 0);
+        assert_eq!(row.partial_same_bits, 0);
+        assert_eq!(row.different_bits, 0);
+        assert_eq!(row.missing_bits, 1);
+        assert_eq!(row.missing_positions, "L1");
     }
 }
 
@@ -935,4 +1267,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
