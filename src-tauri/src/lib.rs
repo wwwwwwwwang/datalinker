@@ -74,6 +74,23 @@ struct ContrastProcessResult {
 }
 
 type CompareKey = (String, String);
+type CompareLocusKey = (String, String, String);
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LocusStatus {
+    same: bool,
+    partial: bool,
+    diff: bool,
+    missing: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocusCategory {
+    Same,
+    Partial,
+    Diff,
+    Missing,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ContrastExportRow {
@@ -630,74 +647,133 @@ fn summary_row_key(row: &ContrastResultRow) -> CompareKey {
     )
 }
 
-fn detail_row_key(row: &ContrastDetailRow) -> CompareKey {
-    (
+fn detail_locus_key(row: &ContrastDetailRow) -> Option<CompareLocusKey> {
+    let label = row.label.trim();
+    if label.is_empty() {
+        return None;
+    }
+    Some((
         row.simple_data_batch_code.clone(),
         row.standard_sample_data_batch_code.clone(),
-    )
+        label.to_string(),
+    ))
 }
 
-fn build_summary_map(rows: &[ContrastResultRow]) -> HashMap<CompareKey, ContrastResultRow> {
-    let mut map = HashMap::new();
-    for row in rows {
-        map.insert(summary_row_key(row), row.clone());
-    }
-    map
+fn is_sample_missing(row: &ContrastDetailRow) -> bool {
+    row.sample_a == 0.0 && row.sample_b == 0.0 && row.sample_c == 0.0
 }
 
-fn build_position_map(rows: &[ContrastDetailRow], category: &str) -> HashMap<CompareKey, String> {
-    let mut grouped: HashMap<CompareKey, BTreeSet<String>> = HashMap::new();
-    for row in rows.iter().filter(|row| row.category == category) {
-        let label = row.label.trim();
-        if label.is_empty() {
-            continue;
-        }
-        grouped
-            .entry(detail_row_key(row))
-            .or_default()
-            .insert(label.to_string());
+fn update_normal_locus_status(status: &mut LocusStatus, row: &ContrastDetailRow) {
+    if is_sample_missing(row) {
+        status.missing = true;
     }
+    if row.category == "\u{5DEE}\u{5F02}" {
+        status.partial = true;
+    }
+}
 
-    grouped
-        .into_iter()
-        .map(|(key, labels)| (key, labels.into_iter().collect::<Vec<_>>().join("/")))
-        .collect()
+fn update_real_locus_status(status: &mut LocusStatus, row: &ContrastDetailRow) {
+    if is_sample_missing(row) {
+        status.missing = true;
+    }
+    if row.category == "\u{5DEE}\u{5F02}" {
+        status.diff = true;
+    } else if row.category == "\u{76F8}\u{540C}" {
+        status.same = true;
+    }
+}
+
+fn resolve_locus_category(status: &LocusStatus) -> LocusCategory {
+    if status.missing {
+        LocusCategory::Missing
+    } else if status.diff {
+        LocusCategory::Diff
+    } else if status.partial {
+        LocusCategory::Partial
+    } else {
+        LocusCategory::Same
+    }
+}
+
+fn join_positions(labels: &BTreeSet<String>) -> String {
+    labels.iter().cloned().collect::<Vec<_>>().join("/")
 }
 
 fn build_export_rows(
     normal_result: &ContrastProcessResult,
     real_result: &ContrastProcessResult,
 ) -> Vec<ContrastExportRow> {
-    let normal_summary_map = build_summary_map(&normal_result.summary_rows);
-    let real_summary_map = build_summary_map(&real_result.summary_rows);
-
-    let same_positions_map = build_position_map(&real_result.detail_rows, "\u{76F8}\u{540C}");
-    let partial_positions_map = build_position_map(&normal_result.detail_rows, "\u{5DEE}\u{5F02}");
-    let diff_positions_map = build_position_map(&real_result.detail_rows, "\u{5DEE}\u{5F02}");
-    let missing_positions_map = build_position_map(&real_result.detail_rows, "\u{7F3A}\u{5931}");
+    let mut locus_status_map: HashMap<CompareLocusKey, LocusStatus> = HashMap::new();
+    for row in &normal_result.detail_rows {
+        let Some(key) = detail_locus_key(row) else {
+            continue;
+        };
+        let status = locus_status_map.entry(key).or_default();
+        update_normal_locus_status(status, row);
+    }
+    for row in &real_result.detail_rows {
+        let Some(key) = detail_locus_key(row) else {
+            continue;
+        };
+        let status = locus_status_map.entry(key).or_default();
+        update_real_locus_status(status, row);
+    }
 
     let mut keys = BTreeSet::new();
-    keys.extend(real_summary_map.keys().cloned());
-    keys.extend(normal_summary_map.keys().cloned());
+    for row in &normal_result.summary_rows {
+        keys.insert(summary_row_key(row));
+    }
+    for row in &real_result.summary_rows {
+        keys.insert(summary_row_key(row));
+    }
+    for locus_key in locus_status_map.keys() {
+        keys.insert((locus_key.0.clone(), locus_key.1.clone()));
+    }
+
+    let mut same_positions: HashMap<CompareKey, BTreeSet<String>> = HashMap::new();
+    let mut partial_positions: HashMap<CompareKey, BTreeSet<String>> = HashMap::new();
+    let mut diff_positions: HashMap<CompareKey, BTreeSet<String>> = HashMap::new();
+    let mut missing_positions: HashMap<CompareKey, BTreeSet<String>> = HashMap::new();
+    let mut all_positions: HashMap<CompareKey, BTreeSet<String>> = HashMap::new();
+
+    for (locus_key, status) in &locus_status_map {
+        let compare_key = (locus_key.0.clone(), locus_key.1.clone());
+        let label = locus_key.2.clone();
+        all_positions
+            .entry(compare_key.clone())
+            .or_default()
+            .insert(label.clone());
+
+        match resolve_locus_category(status) {
+            LocusCategory::Same => {
+                same_positions.entry(compare_key).or_default().insert(label);
+            }
+            LocusCategory::Partial => {
+                partial_positions
+                    .entry(compare_key)
+                    .or_default()
+                    .insert(label);
+            }
+            LocusCategory::Diff => {
+                diff_positions.entry(compare_key).or_default().insert(label);
+            }
+            LocusCategory::Missing => {
+                missing_positions
+                    .entry(compare_key)
+                    .or_default()
+                    .insert(label);
+            }
+        }
+    }
 
     let mut rows = Vec::with_capacity(keys.len());
     for key in keys {
         let (sample_batch_code, standard_batch_code) = key.clone();
-        let (count, same_count, diff_count, missing_count) = real_summary_map
-            .get(&key)
-            .map(|row| {
-                (
-                    row.count,
-                    row.same_number_bits,
-                    row.different_bits,
-                    row.missing_bits,
-                )
-            })
-            .unwrap_or((0, 0, 0, 0));
-        let partial_count = normal_summary_map
-            .get(&key)
-            .map(|row| row.different_bits)
-            .unwrap_or(0);
+        let count = all_positions.get(&key).map_or(0, BTreeSet::len);
+        let same_count = same_positions.get(&key).map_or(0, BTreeSet::len);
+        let partial_count = partial_positions.get(&key).map_or(0, BTreeSet::len);
+        let diff_count = diff_positions.get(&key).map_or(0, BTreeSet::len);
+        let missing_count = missing_positions.get(&key).map_or(0, BTreeSet::len);
 
         rows.push(ContrastExportRow {
             sample_batch_code,
@@ -707,10 +783,22 @@ fn build_export_rows(
             partial_count,
             diff_count,
             missing_count,
-            same_positions: same_positions_map.get(&key).cloned().unwrap_or_default(),
-            partial_positions: partial_positions_map.get(&key).cloned().unwrap_or_default(),
-            diff_positions: diff_positions_map.get(&key).cloned().unwrap_or_default(),
-            missing_positions: missing_positions_map.get(&key).cloned().unwrap_or_default(),
+            same_positions: same_positions
+                .get(&key)
+                .map(join_positions)
+                .unwrap_or_default(),
+            partial_positions: partial_positions
+                .get(&key)
+                .map(join_positions)
+                .unwrap_or_default(),
+            diff_positions: diff_positions
+                .get(&key)
+                .map(join_positions)
+                .unwrap_or_default(),
+            missing_positions: missing_positions
+                .get(&key)
+                .map(join_positions)
+                .unwrap_or_default(),
         });
     }
     rows
@@ -737,7 +825,7 @@ fn write_export_sheet(sheet: &mut Worksheet, data: &[ContrastExportRow]) {
         "\u{5B8C}\u{5168}\u{5339}\u{914D}",
         "\u{4E0D}\u{5206}\u{5339}\u{914D}",
         "\u{5B8C}\u{5168}\u{4E0D}\u{540C}",
-        "\u{6807}\u{6837}\u{4F4D}\u{70B9}\u{7F3A}\u{5931}",
+        "\u{6837}\u{672C}\u{4F4D}\u{70B9}\u{7F3A}\u{5931}",
         "P**/P**\u{2026}",
         "",
         "",
@@ -809,13 +897,7 @@ fn write_export_sheet(sheet: &mut Worksheet, data: &[ContrastExportRow]) {
     }
 }
 
-fn apply_export_cell_style(
-    sheet: &mut Worksheet,
-    col: u32,
-    row: u32,
-    bold: bool,
-    wrap_text: bool,
-) {
+fn apply_export_cell_style(sheet: &mut Worksheet, col: u32, row: u32, bold: bool, wrap_text: bool) {
     let style = sheet.get_style_mut((col, row));
     style.get_font_mut().set_name("\u{5B8B}\u{4F53}");
     style.get_font_mut().set_size(11.0);
@@ -827,15 +909,11 @@ fn apply_export_cell_style(
     alignment.set_wrap_text(wrap_text);
 
     let borders = style.get_borders_mut();
-    borders
-        .get_top_mut()
-        .set_border_style(Border::BORDER_THIN);
+    borders.get_top_mut().set_border_style(Border::BORDER_THIN);
     borders
         .get_bottom_mut()
         .set_border_style(Border::BORDER_THIN);
-    borders
-        .get_left_mut()
-        .set_border_style(Border::BORDER_THIN);
+    borders.get_left_mut().set_border_style(Border::BORDER_THIN);
     borders
         .get_right_mut()
         .set_border_style(Border::BORDER_THIN);
@@ -960,6 +1038,24 @@ mod tests {
         label: &str,
         category: &str,
     ) -> ContrastDetailRow {
+        detail_row_with_sample(
+            contrast_type,
+            sample_batch_code,
+            standard_batch_code,
+            label,
+            category,
+            (1.0, 1.0, 1.0),
+        )
+    }
+
+    fn detail_row_with_sample(
+        contrast_type: &str,
+        sample_batch_code: &str,
+        standard_batch_code: &str,
+        label: &str,
+        category: &str,
+        sample_values: (f64, f64, f64),
+    ) -> ContrastDetailRow {
         ContrastDetailRow {
             contrast_type: contrast_type.to_string(),
             simple_data_batch_code: sample_batch_code.to_string(),
@@ -969,9 +1065,9 @@ mod tests {
             standard_a: 0.0,
             standard_b: 0.0,
             standard_c: 0.0,
-            sample_a: 0.0,
-            sample_b: 0.0,
-            sample_c: 0.0,
+            sample_a: sample_values.0,
+            sample_b: sample_values.1,
+            sample_c: sample_values.2,
         }
     }
 
@@ -1005,6 +1101,50 @@ mod tests {
             sheet
                 .get_cell_mut((start_col + 2, 2u32))
                 .set_value(c.to_string());
+        }
+
+        umya::writer::xlsx::write(&book, path).expect("failed to write test excel");
+    }
+
+    fn write_test_input_excel_with_rows(
+        path: &Path,
+        loci: &[&str],
+        rows: &[(&str, Vec<(f64, f64, f64)>)],
+    ) {
+        let mut book = umya::new_file();
+        let sheet = book.get_sheet_by_name_mut("Sheet1").unwrap();
+
+        sheet.get_cell_mut((1u32, 1u32)).set_value("id".to_string());
+        sheet
+            .get_cell_mut((2u32, 1u32))
+            .set_value("batch".to_string());
+        for (idx, label) in loci.iter().enumerate() {
+            let start_col = 3u32 + (idx as u32) * 3;
+            sheet
+                .get_cell_mut((start_col, 1u32))
+                .set_value((*label).to_string());
+        }
+
+        for (row_index, (batch_code, values)) in rows.iter().enumerate() {
+            let excel_row = (row_index + 2) as u32;
+            sheet
+                .get_cell_mut((1u32, excel_row))
+                .set_value((row_index + 1).to_string());
+            sheet
+                .get_cell_mut((2u32, excel_row))
+                .set_value((*batch_code).to_string());
+            for (idx, (a, b, c)) in values.iter().enumerate() {
+                let start_col = 3u32 + (idx as u32) * 3;
+                sheet
+                    .get_cell_mut((start_col, excel_row))
+                    .set_value(a.to_string());
+                sheet
+                    .get_cell_mut((start_col + 1, excel_row))
+                    .set_value(b.to_string());
+                sheet
+                    .get_cell_mut((start_col + 2, excel_row))
+                    .set_value(c.to_string());
+            }
         }
 
         umya::writer::xlsx::write(&book, path).expect("failed to write test excel");
@@ -1078,39 +1218,39 @@ mod tests {
     #[test]
     fn build_export_rows_maps_counts_and_positions() {
         let normal = ContrastProcessResult {
-            summary_rows: vec![summary_row("S-1", "STD-1", 3, 1, 2, 0)],
+            summary_rows: vec![summary_row("S-1", "STD-1", 4, 2, 2, 0)],
             detail_rows: vec![
                 detail_row(
                     "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}",
                     "S-1",
                     "STD-1",
-                    "P2",
+                    "L2",
                     "\u{5DEE}\u{5F02}",
                 ),
                 detail_row(
                     "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}",
                     "S-1",
                     "STD-1",
-                    "P1",
+                    "L4",
                     "\u{5DEE}\u{5F02}",
                 ),
                 detail_row(
                     "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}",
                     "S-1",
                     "STD-1",
-                    "P2",
+                    "L4",
                     "\u{5DEE}\u{5F02}",
                 ),
             ],
         };
         let real = ContrastProcessResult {
-            summary_rows: vec![summary_row("S-1", "STD-1", 3, 2, 1, 0)],
+            summary_rows: vec![summary_row("S-1", "STD-1", 4, 2, 2, 0)],
             detail_rows: vec![
                 detail_row(
                     "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}",
                     "S-1",
                     "STD-1",
-                    "L2",
+                    "L1",
                     "\u{76F8}\u{540C}",
                 ),
                 detail_row(
@@ -1125,21 +1265,22 @@ mod tests {
                     "S-1",
                     "STD-1",
                     "L2",
-                    "\u{76F8}\u{540C}",
-                ),
-                detail_row(
-                    "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}",
-                    "S-1",
-                    "STD-1",
-                    "D1",
                     "\u{5DEE}\u{5F02}",
                 ),
+                detail_row_with_sample(
+                    "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}",
+                    "S-1",
+                    "STD-1",
+                    "L3",
+                    "\u{5DEE}\u{5F02}",
+                    (0.0, 0.0, 0.0),
+                ),
                 detail_row(
                     "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}",
                     "S-1",
                     "STD-1",
-                    "M1",
-                    "\u{7F3A}\u{5931}",
+                    "L4",
+                    "\u{76F8}\u{540C}",
                 ),
             ],
         };
@@ -1149,15 +1290,15 @@ mod tests {
         let row = &rows[0];
         assert_eq!(row.sample_batch_code, "S-1");
         assert_eq!(row.standard_batch_code, "STD-1");
-        assert_eq!(row.count, 3);
-        assert_eq!(row.same_count, 2);
-        assert_eq!(row.partial_count, 2);
+        assert_eq!(row.count, 4);
+        assert_eq!(row.same_count, 1);
+        assert_eq!(row.partial_count, 1);
         assert_eq!(row.diff_count, 1);
-        assert_eq!(row.missing_count, 0);
-        assert_eq!(row.same_positions, "L1/L2");
-        assert_eq!(row.partial_positions, "P1/P2");
-        assert_eq!(row.diff_positions, "D1");
-        assert_eq!(row.missing_positions, "M1");
+        assert_eq!(row.missing_count, 1);
+        assert_eq!(row.same_positions, "L1");
+        assert_eq!(row.partial_positions, "L4");
+        assert_eq!(row.diff_positions, "L2");
+        assert_eq!(row.missing_positions, "L3");
     }
 
     #[test]
@@ -1182,12 +1323,101 @@ mod tests {
         let row = &rows[0];
         assert_eq!(row.sample_batch_code, "S-2");
         assert_eq!(row.standard_batch_code, "STD-2");
-        assert_eq!(row.count, 0);
+        assert_eq!(row.count, 1);
         assert_eq!(row.same_count, 0);
         assert_eq!(row.partial_count, 1);
         assert_eq!(row.diff_count, 0);
         assert_eq!(row.missing_count, 0);
         assert_eq!(row.partial_positions, "L3");
+    }
+
+    #[test]
+    fn build_export_rows_prioritizes_worst_result_per_locus() {
+        let normal = ContrastProcessResult {
+            summary_rows: vec![summary_row("S-3", "STD-3", 1, 0, 1, 0)],
+            detail_rows: vec![
+                detail_row(
+                    "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}",
+                    "S-3",
+                    "STD-3",
+                    "C1",
+                    "\u{5DEE}\u{5F02}",
+                ),
+                detail_row_with_sample(
+                    "\u{4EB2}\u{5B50}\u{9274}\u{5B9A}",
+                    "S-3",
+                    "STD-3",
+                    "C1",
+                    "\u{7F3A}\u{5931}",
+                    (0.0, 0.0, 0.0),
+                ),
+            ],
+        };
+        let real = ContrastProcessResult {
+            summary_rows: vec![summary_row("S-3", "STD-3", 1, 1, 0, 0)],
+            detail_rows: vec![
+                detail_row(
+                    "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}",
+                    "S-3",
+                    "STD-3",
+                    "C1",
+                    "\u{76F8}\u{540C}",
+                ),
+                detail_row(
+                    "\u{771F}\u{5B9E}\u{6027}\u{9274}\u{5B9A}",
+                    "S-3",
+                    "STD-3",
+                    "C1",
+                    "\u{5DEE}\u{5F02}",
+                ),
+            ],
+        };
+
+        let rows = build_export_rows(&normal, &real);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.count, 1);
+        assert_eq!(row.same_count, 0);
+        assert_eq!(row.partial_count, 0);
+        assert_eq!(row.diff_count, 0);
+        assert_eq!(row.missing_count, 1);
+        assert_eq!(row.missing_positions, "C1");
+    }
+
+    #[test]
+    fn build_export_rows_treats_zero_and_absent_sample_as_missing() {
+        let standard_list = vec![
+            dna("STD-1", "L1", 10.0, 11.0, 12.0),
+            dna("STD-1", "L2", 20.0, 21.0, 22.0),
+        ];
+        let sample_list = vec![dna("S-1", "L1", 0.0, 0.0, 0.0)];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let normal = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            true,
+        );
+        let real = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            false,
+        );
+
+        let rows = build_export_rows(&normal, &real);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.sample_batch_code, "S-1");
+        assert_eq!(row.standard_batch_code, "STD-1");
+        assert_eq!(row.count, 2);
+        assert_eq!(row.same_count, 0);
+        assert_eq!(row.partial_count, 0);
+        assert_eq!(row.diff_count, 0);
+        assert_eq!(row.missing_count, 2);
+        assert_eq!(row.missing_positions, "L1/L2");
     }
 
     #[test]
@@ -1199,12 +1429,15 @@ mod tests {
         write_test_input_excel(
             &standard_path,
             "STD-1",
-            &[("L2", (20.0, 21.0, 22.0)), ("L1", (10.0, 11.0, 12.0))],
+            &[("L1", (10.0, 11.0, 12.0)), ("L2", (20.0, 21.0, 22.0))],
         );
-        write_test_input_excel(
+        write_test_input_excel_with_rows(
             &sample_path,
-            "SAMPLE-1",
-            &[("L2", (20.0, 21.0, 22.0)), ("L1", (10.0, 11.0, 12.0))],
+            &["L1", "L2"],
+            &[
+                ("SAMPLE-1", vec![(10.0, 11.0, 12.0), (0.0, 0.0, 0.0)]),
+                ("SAMPLE-1", vec![(10.0, 11.0, 12.0), (20.0, 21.0, 22.0)]),
+            ],
         );
 
         let row = ContrastRow {
@@ -1235,18 +1468,26 @@ mod tests {
             .map(|row| row.iter().map(cell_to_string).collect())
             .collect();
         assert_eq!(rows[0][0], "\u{6837}\u{54C1}\u{7F16}\u{53F7}");
-        assert_eq!(rows[0][8], "\u{4E0D}\u{5206}\u{5339}\u{914D}\u{4F4D}\u{7F6E}");
+        assert_eq!(
+            rows[0][8],
+            "\u{4E0D}\u{5B8C}\u{5168}\u{76F8}\u{540C}\u{4F4D}\u{7F6E}"
+        );
         assert_eq!(rows[0][10], "\u{7F3A}\u{5931}\u{4F4D}\u{7F6E}");
         assert_eq!(rows[1][3], "\u{5B8C}\u{5168}\u{5339}\u{914D}");
         assert_eq!(rows[1][4], "\u{4E0D}\u{5206}\u{5339}\u{914D}");
+        assert_eq!(
+            rows[1][6],
+            "\u{6837}\u{672C}\u{4F4D}\u{70B9}\u{7F3A}\u{5931}"
+        );
         assert_eq!(rows[2][0], "SAMPLE-1");
         assert_eq!(rows[2][1], "STD-1");
         assert_eq!(rows[2][2], "2");
-        assert_eq!(rows[2][3], "2");
+        assert_eq!(rows[2][3], "1");
         assert_eq!(rows[2][4], "");
         assert_eq!(rows[2][5], "0");
-        assert_eq!(rows[2][6], "0");
-        assert_eq!(rows[2][7], "L1/L2");
+        assert_eq!(rows[2][6], "1");
+        assert_eq!(rows[2][7], "L1");
+        assert_eq!(rows[2][10], "L2");
 
         let _ = fs::remove_file(output_path);
         let _ = fs::remove_file(standard_path);
