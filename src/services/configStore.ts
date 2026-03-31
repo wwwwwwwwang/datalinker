@@ -14,6 +14,7 @@ function normalizeContrastRow(row: Partial<ContrastRow>): ContrastRow {
     samplePath: row.samplePath ?? "",
     analysisResultsPath: row.analysisResultsPath ?? "",
     thresholdNumber: row.thresholdNumber ?? "1",
+    lastResultFilePath: row.lastResultFilePath ?? "",
     remarks: row.remarks ?? ""
   };
 }

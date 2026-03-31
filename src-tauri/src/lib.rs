@@ -970,11 +970,54 @@ fn run_contrast_internal(row: ContrastRow) -> Result<String, String> {
     Ok(output_path.to_string_lossy().to_string())
 }
 
+fn find_latest_result_file_in_dir(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let entries =
+        fs::read_dir(dir).map_err(|e| format!("Read result directory failed: {}", e))?;
+
+    let mut latest: Option<(SystemTime, PathBuf)> = None;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Read directory entry failed: {}", e))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        let is_result_name = file_name.starts_with("\u{89E3}\u{6790}\u{7ED3}\u{679C}_")
+            && (file_name.ends_with(".xlsx") || file_name.ends_with(".xls"));
+        if !is_result_name {
+            continue;
+        }
+
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+        match &latest {
+            Some((last_modified, _)) if modified <= *last_modified => {}
+            _ => latest = Some((modified, path)),
+        }
+    }
+
+    Ok(latest.map(|(_, path)| path))
+}
+
 #[tauri::command]
 async fn run_contrast(row: ContrastRow) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || run_contrast_internal(row))
         .await
         .map_err(|e| format!("Run contrast task failed: {}", e))?
+}
+
+#[tauri::command]
+fn find_latest_result_file(path: String) -> Result<Option<String>, String> {
+    let target = Path::new(path.trim());
+    if path.trim().is_empty() {
+        return Ok(None);
+    }
+    let latest = find_latest_result_file_in_dir(target)?;
+    Ok(latest.map(|p| p.to_string_lossy().to_string()))
 }
 
 #[cfg(test)]
@@ -1257,7 +1300,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_contrast_config,
             save_contrast_config,
-            run_contrast
+            run_contrast,
+            find_latest_result_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

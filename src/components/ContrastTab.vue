@@ -65,8 +65,13 @@ function cloneRowSnapshot(row: ContrastRow): ContrastRow {
     samplePath: row.samplePath,
     analysisResultsPath: row.analysisResultsPath,
     thresholdNumber: row.thresholdNumber,
+    lastResultFilePath: row.lastResultFilePath,
     remarks: row.remarks
   };
+}
+
+function findRowByKey(rowKey: string) {
+  return contrastRows.value.find((row) => ensureRowKey(row) === rowKey);
 }
 
 function isRowRunning(row: ContrastRow) {
@@ -115,6 +120,11 @@ async function drainQueue() {
 
       try {
         const outputFilePath = await invoke<string>("run_contrast", { row: current.rowSnapshot });
+        const row = findRowByKey(current.rowKey);
+        if (row) {
+          row.lastResultFilePath = outputFilePath;
+          await saveContrastConfig({ silent: true });
+        }
         ElMessage.success(
           `解析完毕，结果文件：${outputFilePath}（汇总含相同/不完全相同/差异/缺失位点数量与位置）`
         );
@@ -185,6 +195,7 @@ async function chooseRowStandardSamplePath(row: ContrastRow) {
   });
   if (typeof file === "string") {
     row.standardSamplePath = file;
+    row.lastResultFilePath = "";
     await onContrastRowEdited();
   }
 }
@@ -197,6 +208,7 @@ async function chooseRowSamplePath(row: ContrastRow) {
   });
   if (typeof file === "string") {
     row.samplePath = file;
+    row.lastResultFilePath = "";
     await onContrastRowEdited();
   }
 }
@@ -208,6 +220,7 @@ async function chooseRowAnalysisResultsPath(row: ContrastRow) {
   });
   if (typeof dir === "string") {
     row.analysisResultsPath = dir;
+    row.lastResultFilePath = "";
     await onContrastRowEdited();
   }
 }
@@ -254,6 +267,7 @@ async function addContrastRow() {
     samplePath: contrastForm.samplePath,
     analysisResultsPath: contrastForm.analysisResultsPath,
     thresholdNumber: String(contrastForm.thresholdNumber),
+    lastResultFilePath: "",
     remarks: ""
   });
   await saveContrastConfig({ silent: true });
@@ -334,32 +348,77 @@ function resolveParentDir(path: string) {
   return parent;
 }
 
-async function openResultPath(path: string) {
+async function openResultPath(path: string, options?: { suppressError?: boolean }) {
   const target = path.trim();
   if (!target) {
-    ElMessage.warning("路径为空");
-    return;
+    if (!options?.suppressError) {
+      ElMessage.warning("路径为空");
+    }
+    return false;
   }
 
   try {
     await revealItemInDir(target);
-    return;
+    return true;
   } catch {}
 
   try {
     await openPath(target);
-    return;
+    return true;
   } catch {}
 
   const parentDir = resolveParentDir(target);
   if (parentDir && parentDir !== target) {
     try {
       await openPath(parentDir);
-      return;
+      return true;
     } catch {}
   }
 
-  ElMessage.error("无法打开路径");
+  if (!options?.suppressError) {
+    ElMessage.error("无法打开路径");
+  }
+  return false;
+}
+
+async function openAnalysisResultPath(row: ContrastRow) {
+  const target = row.analysisResultsPath.trim();
+  if (!target) {
+    ElMessage.warning("路径为空");
+    return;
+  }
+
+  const configuredLatest = row.lastResultFilePath.trim();
+  if (configuredLatest) {
+    const opened = await openResultPath(configuredLatest, { suppressError: true });
+    if (opened) {
+      return;
+    }
+  }
+
+  try {
+    const latestFile = await invoke<string | null>("find_latest_result_file", { path: target });
+    if (latestFile) {
+      const opened = await openResultPath(latestFile, { suppressError: true });
+      if (opened) {
+        if (row.lastResultFilePath !== latestFile) {
+          row.lastResultFilePath = latestFile;
+          await onContrastRowEdited();
+        }
+        return;
+      }
+    }
+  } catch {}
+
+  const openedDir = await openResultPath(target, { suppressError: true });
+  if (!openedDir) {
+    ElMessage.error("无法打开路径");
+  }
+}
+
+async function onThresholdChanged(row: ContrastRow) {
+  row.lastResultFilePath = "";
+  await onContrastRowEdited();
 }
 
 function updateCurrentRow(row: ContrastRow | null) {
@@ -458,13 +517,13 @@ onBeforeUnmount(() => {
       </el-table-column>
       <el-table-column label="查看" width="80">
         <template #default="scope">
-          <el-button size="small" @click="openResultPath(scope.row.analysisResultsPath)">查看</el-button>
+          <el-button size="small" @click="openAnalysisResultPath(scope.row)">查看</el-button>
         </template>
       </el-table-column>
 
       <el-table-column prop="thresholdNumber" label="阈值" width="90">
         <template #default="scope">
-          <el-input v-model="scope.row.thresholdNumber" size="small" @change="onContrastRowEdited" />
+          <el-input v-model="scope.row.thresholdNumber" size="small" @change="onThresholdChanged(scope.row)" />
         </template>
       </el-table-column>
       <el-table-column label="运行" width="84">

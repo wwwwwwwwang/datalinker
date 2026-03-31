@@ -3,5 +3,6 @@ export type ContrastRow = {
   samplePath: string;
   analysisResultsPath: string;
   thresholdNumber: string;
+  lastResultFilePath: string;
   remarks: string;
 };
