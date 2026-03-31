@@ -638,18 +638,6 @@ fn normal_process(
         }
     });
 
-    let mut last_simple = String::new();
-    let mut seen_first = false;
-    for row in &mut contrast_results {
-        let current_simple = row.simple_data_batch_code.clone().unwrap_or_default();
-        if seen_first && current_simple == last_simple {
-            row.simple_data_batch_code = None;
-            continue;
-        }
-        last_simple = current_simple;
-        seen_first = true;
-    }
-
     detail_rows.sort_by(|a, b| {
         a.contrast_type
             .cmp(&b.contrast_type)
@@ -1063,6 +1051,13 @@ mod tests {
         );
 
         assert_eq!(result.summary_rows.len(), 2);
+        assert!(
+            result
+                .summary_rows
+                .iter()
+                .all(|row| row.simple_data_batch_code.as_deref() == Some("SAMPLE-1")),
+            "summary rows should keep repeated sample batch code populated"
+        );
 
         let std_a_row = result
             .summary_rows
