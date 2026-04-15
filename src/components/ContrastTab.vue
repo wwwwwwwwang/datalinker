@@ -126,7 +126,7 @@ async function drainQueue() {
           await saveContrastConfig({ silent: true });
         }
         ElMessage.success(
-          `解析完毕，结果文件：${outputFilePath}（汇总含相同/不完全相同/差异/缺失位点数量与位置）`
+          `解析完毕，结果文件：${outputFilePath}（汇总含完全匹配/不完全匹配/完全不同/标样位点缺失的数量与位置）`
         );
       } catch (error) {
         ElMessage.error(String(error));
@@ -466,7 +466,7 @@ onBeforeUnmount(() => {
     </div>
 
     <p class="contrast-hint">
-      说明：标样位点数量支持动态增减；汇总结果会输出相同/不完全相同/差异/缺失位点的数量与位点位置，样本未匹配到的标样位点会计入“缺失位点”。
+      说明：按位点三联值逐位比较并支持阈值；汇总结果会输出完全匹配/不完全匹配/完全不同/标样位点缺失的数量与位置，样本未匹配到的标样位点会计入“标样位点缺失”。
     </p>
     <p v-if="queueCount > 0" class="contrast-queue">
       当前队列：{{ queueCount }}（运行中 {{ activeTask ? 1 : 0 }}，排队 {{ pendingTasks.length }}）

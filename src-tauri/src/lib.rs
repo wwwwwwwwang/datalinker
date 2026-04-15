@@ -310,6 +310,10 @@ fn is_triplet_missing(a: f64, b: f64, c: f64) -> bool {
     a == 0.0 && b == 0.0 && c == 0.0
 }
 
+fn is_real_value(value: f64) -> bool {
+    value != 0.0
+}
+
 fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
     let mut workbook =
         open_workbook_auto(path).map_err(|e| format!("Parse Excel failed: {}", e))?;
@@ -382,84 +386,39 @@ fn build_batch_label_map(data: &[DnaData]) -> BatchLabelMap {
     batch_label_map
 }
 
-fn get_compare_a(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
-    let a = standard.a;
-    let b = standard.b;
-    let c = standard.c;
-    let a1 = sample.a;
-    let b1 = sample.b;
-    let c1 = sample.c;
-    if is_triplet_missing(a1, b1, c1) {
-        return 0;
-    }
-    if a1 >= a - threshold as f64 && a1 <= a + threshold as f64 {
-        return 3;
-    }
-    if a1 >= b - threshold as f64 && a1 <= b + threshold as f64 {
-        return 2;
-    }
-    if a1 >= c - threshold as f64 && a1 <= c + threshold as f64 {
-        return 1;
-    }
-    0
-}
-
-fn get_compare_b(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
-    let a = standard.a;
-    let b = standard.b;
-    let c = standard.c;
-    let a1 = sample.a;
-    let b1 = sample.b;
-    let c1 = sample.c;
-    if is_triplet_missing(a1, b1, c1) {
-        return 0;
-    }
-    if b1 >= a - threshold as f64 && b1 <= a + threshold as f64 {
-        return 3;
-    }
-    if b1 >= b - threshold as f64 && b1 <= b + threshold as f64 {
-        return 2;
-    }
-    if b1 >= c - threshold as f64 && b1 <= c + threshold as f64 {
-        return 1;
-    }
-    0
-}
-
-fn get_compare_c(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
-    let a = standard.a;
-    let b = standard.b;
-    let c = standard.c;
-    let a1 = sample.a;
-    let b1 = sample.b;
-    let c1 = sample.c;
-    if is_triplet_missing(a1, b1, c1) {
-        return 0;
-    }
-    if c1 >= a - threshold as f64 && c1 <= a + threshold as f64 {
-        return 3;
-    }
-    if c1 >= b - threshold as f64 && c1 <= b + threshold as f64 {
-        return 2;
-    }
-    if c1 >= c - threshold as f64 && c1 <= c + threshold as f64 {
-        return 1;
-    }
-    0
-}
-
-fn get_label_result(a: i32, b: i32, c: i32, standard_missing: bool, sample_missing: bool) -> i32 {
-    if standard_missing || sample_missing {
+fn paternity_compare(standard: &DnaData, sample: &DnaData, threshold: i32) -> i32 {
+    if is_triplet_missing(standard.a, standard.b, standard.c)
+        || is_triplet_missing(sample.a, sample.b, sample.c)
+    {
         return RESULT_MISSING;
     }
-    let count = a + b + c;
-    if count == 0 {
-        return RESULT_DIFFERENT;
-    }
-    if count > 1 {
+
+    let standard_values = [standard.a, standard.b, standard.c];
+    let sample_values = [sample.a, sample.b, sample.c];
+
+    if standard_values == sample_values {
         return RESULT_SAME;
     }
-    RESULT_PARTIAL_SAME
+
+    let threshold = threshold as f64;
+    let mut has_threshold_match = false;
+    for idx in 0..3 {
+        let standard_value = standard_values[idx];
+        let sample_value = sample_values[idx];
+        if !is_real_value(standard_value) || !is_real_value(sample_value) {
+            continue;
+        }
+        if (sample_value - standard_value).abs() <= threshold {
+            has_threshold_match = true;
+            break;
+        }
+    }
+
+    if has_threshold_match {
+        RESULT_PARTIAL_SAME
+    } else {
+        RESULT_DIFFERENT
+    }
 }
 
 fn real_compare(standard: &DnaData, sample: &DnaData) -> i32 {
@@ -481,10 +440,10 @@ fn real_compare(standard: &DnaData, sample: &DnaData) -> i32 {
 
 fn result_category(result: i32) -> &'static str {
     match result {
-        RESULT_SAME => "\u{76F8}\u{540C}",
-        RESULT_PARTIAL_SAME => "\u{4E0D}\u{5B8C}\u{5168}\u{76F8}\u{540C}",
-        RESULT_DIFFERENT => "\u{5DEE}\u{5F02}",
-        _ => "\u{7F3A}\u{5931}",
+        RESULT_SAME => "\u{5B8C}\u{5168}\u{5339}\u{914D}",
+        RESULT_PARTIAL_SAME => "\u{4E0D}\u{5B8C}\u{5168}\u{5339}\u{914D}",
+        RESULT_DIFFERENT => "\u{5B8C}\u{5168}\u{4E0D}\u{540C}",
+        _ => "\u{6807}\u{6837}\u{4F4D}\u{70B9}\u{7F3A}\u{5931}",
     }
 }
 
@@ -541,20 +500,7 @@ fn normal_process(
                 {
                     for sample_data in sample_rows {
                         let result = if is_paternity {
-                            let sample_missing =
-                                is_triplet_missing(sample_data.a, sample_data.b, sample_data.c);
-                            let standard_missing =
-                                is_triplet_missing(standard.a, standard.b, standard.c);
-                            let compare_a = get_compare_a(standard, sample_data, threshold_number);
-                            let compare_b = get_compare_b(standard, sample_data, threshold_number);
-                            let compare_c = get_compare_c(standard, sample_data, threshold_number);
-                            get_label_result(
-                                compare_a,
-                                compare_b,
-                                compare_c,
-                                standard_missing,
-                                sample_missing,
-                            )
+                            paternity_compare(standard, sample_data, threshold_number)
                         } else {
                             real_compare(standard, sample_data)
                         };
@@ -716,6 +662,25 @@ fn set_data_style(sheet: &mut Worksheet, col: u32, row: u32) {
     font.get_color_mut().set_argb("00000000");
 }
 
+fn set_description_style(sheet: &mut Worksheet, col: u32, row: u32) {
+    let style = sheet.get_style_mut((col, row));
+    style.set_background_color("00FFFFFF");
+    set_thin_black_border(style);
+    let alignment = style.get_alignment_mut();
+    if col <= 2 {
+        alignment.set_horizontal(umya::HorizontalAlignmentValues::Left);
+        alignment.set_wrap_text(false);
+    } else {
+        alignment.set_horizontal(umya::HorizontalAlignmentValues::Center);
+        alignment.set_wrap_text(true);
+    }
+    alignment.set_vertical(umya::VerticalAlignmentValues::Center);
+    let font = style.get_font_mut();
+    font.set_bold(true);
+    font.set_size(11.0);
+    font.get_color_mut().set_argb("00FF0000");
+}
+
 fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
     let headers = [
         "\u{6837}\u{54C1}\u{7F16}\u{53F7}",
@@ -743,22 +708,36 @@ fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
         "",
         "",
     ];
+    let descriptions = [
+        "",
+        "",
+        "",
+        "\u{6837}\u{54C1}\u{548C}\u{6807}\u{6837}\u{4E09}\u{4E2A}\u{503C}\u{5B8C}\u{5168}\u{4E00}\u{6837}",
+        "\u{6837}\u{54C1}\u{548C}\u{6807}\u{6837}\u{5982}\u{679C}\u{4E09}\u{4E2A}\u{503C}\u{4E2D}\u{53EA}\u{6709}\u{7A7A}\u{503C}\u{80FD}\u{5339}\u{914D}\u{4E0D}\u{5C5E}\u{4E8E}\u{8BE5}\u{7C7B}\u{FF0C}\u{53EA}\u{6BD4}\u{8F83}\u{5177}\u{6709}\u{771F}\u{5B9E}\u{503C}\u{7684}",
+        "\u{6837}\u{54C1}\u{548C}\u{6807}\u{6837}\u{53EA}\u{6BD4}\u{8F83}\u{5177}\u{6709}\u{771F}\u{5B9E}\u{503C}\u{FF0C}\u{4E0D}\u{6BD4}\u{8F83}\u{7A7A}\u{503C}",
+        "\u{6837}\u{54C1}\u{6216}\u{6807}\u{6837}\u{4E09}\u{4E2A}\u{503C}\u{90FD}\u{662F}\u{7A7A}\u{7684}",
+        "",
+        "",
+        "",
+        "",
+    ];
 
-    // Layout close to template: two-row header, grouped colors, merged blank block.
+    // Layout close to template: three-row header with description row.
     sheet.add_merge_cells("A2:C2");
     sheet.get_row_dimension_mut(&1u32).set_height(48.0);
     sheet.get_row_dimension_mut(&2u32).set_height(32.0);
+    sheet.get_row_dimension_mut(&3u32).set_height(126.0);
     sheet.get_column_dimension_mut("A").set_width(45.0);
     sheet.get_column_dimension_mut("B").set_width(43.0);
     sheet.get_column_dimension_mut("C").set_width(10.0);
-    sheet.get_column_dimension_mut("D").set_width(10.0);
-    sheet.get_column_dimension_mut("E").set_width(10.0);
-    sheet.get_column_dimension_mut("F").set_width(10.0);
-    sheet.get_column_dimension_mut("G").set_width(10.0);
+    sheet.get_column_dimension_mut("D").set_width(13.0);
+    sheet.get_column_dimension_mut("E").set_width(13.0);
+    sheet.get_column_dimension_mut("F").set_width(13.0);
+    sheet.get_column_dimension_mut("G").set_width(13.0);
     sheet.get_column_dimension_mut("H").set_width(15.0);
     sheet.get_column_dimension_mut("I").set_width(10.0);
-    sheet.get_column_dimension_mut("J").set_width(10.0);
-    sheet.get_column_dimension_mut("K").set_width(10.0);
+    sheet.get_column_dimension_mut("J").set_width(13.0);
+    sheet.get_column_dimension_mut("K").set_width(13.0);
 
     for (idx, header) in headers.iter().enumerate() {
         sheet
@@ -769,6 +748,11 @@ fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
         sheet
             .get_cell_mut(((idx + 1) as u32, 2u32))
             .set_value(sub_header.to_string());
+    }
+    for (idx, description) in descriptions.iter().enumerate() {
+        sheet
+            .get_cell_mut(((idx + 1) as u32, 3u32))
+            .set_value(description.to_string());
     }
 
     // Header styles.
@@ -784,9 +768,12 @@ fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
         set_header_style(sheet, col, 1, "00FFFF00", false);
         set_header_style(sheet, col, 2, "00FFFF00", col == 9);
     }
+    for col in 1u32..=11u32 {
+        set_description_style(sheet, col, 3);
+    }
 
     for (row_index, row) in data.iter().enumerate() {
-        let excel_row = (row_index + 3) as u32;
+        let excel_row = (row_index + 4) as u32;
         sheet.get_row_dimension_mut(&excel_row).set_height(24.0);
         let simple_code = row.simple_data_batch_code.clone().unwrap_or_default();
         sheet.get_cell_mut((1u32, excel_row)).set_value(simple_code);
@@ -971,8 +958,7 @@ fn run_contrast_internal(row: ContrastRow) -> Result<String, String> {
 }
 
 fn find_latest_result_file_in_dir(dir: &Path) -> Result<Option<PathBuf>, String> {
-    let entries =
-        fs::read_dir(dir).map_err(|e| format!("Read result directory failed: {}", e))?;
+    let entries = fs::read_dir(dir).map_err(|e| format!("Read result directory failed: {}", e))?;
 
     let mut latest: Option<(SystemTime, PathBuf)> = None;
 
@@ -1090,7 +1076,7 @@ mod tests {
             &contrast_row_for_test(),
             &standard_batch_map,
             &sample_batch_map,
-            false,
+            true,
         );
 
         assert_eq!(result.summary_rows.len(), 2);
@@ -1143,7 +1129,7 @@ mod tests {
         ];
         let sample_list = vec![
             dna("SAMPLE-1", "L-SAME", 10.0, 20.0, 30.0),
-            dna("SAMPLE-1", "L-PARTIAL", 30.0, 90.0, 90.0),
+            dna("SAMPLE-1", "L-PARTIAL", 11.0, 90.0, 90.0),
             dna("SAMPLE-1", "L-DIFF", 90.0, 91.0, 92.0),
         ];
         let standard_batch_map = build_batch_data_map(&standard_list);
@@ -1167,6 +1153,30 @@ mod tests {
         assert_eq!(row.partial_same_positions, "L-PARTIAL");
         assert_eq!(row.different_positions, "L-DIFF");
         assert_eq!(row.missing_positions, "L-MISSING");
+    }
+
+    #[test]
+    fn paternity_threshold_hit_without_exact_match_is_partial() {
+        let standard = dna("STD-1", "L1", 10.0, 20.0, 0.0);
+        let sample = dna("SAMPLE-1", "L1", 11.0, 35.0, 0.0);
+        let result = paternity_compare(&standard, &sample, 1);
+        assert_eq!(result, RESULT_PARTIAL_SAME);
+    }
+
+    #[test]
+    fn paternity_only_empty_overlap_is_not_partial() {
+        let standard = dna("STD-1", "L1", 10.0, 0.0, 0.0);
+        let sample = dna("SAMPLE-1", "L1", 0.0, 20.0, 0.0);
+        let result = paternity_compare(&standard, &sample, 1);
+        assert_eq!(result, RESULT_DIFFERENT);
+    }
+
+    #[test]
+    fn paternity_compares_by_position_not_cross_position() {
+        let standard = dna("STD-1", "L1", 10.0, 0.0, 0.0);
+        let sample = dna("SAMPLE-1", "L1", 0.0, 10.0, 0.0);
+        let result = paternity_compare(&standard, &sample, 0);
+        assert_eq!(result, RESULT_DIFFERENT);
     }
 
     #[test]
@@ -1207,7 +1217,8 @@ mod tests {
         let _ = fs::remove_file(&temp_file);
 
         assert_eq!(parsed.len(), 2, "both loci should be counted for BATCH-1");
-        let parsed_batches: Vec<String> = parsed.iter().map(|item| item.batch_code.clone()).collect();
+        let parsed_batches: Vec<String> =
+            parsed.iter().map(|item| item.batch_code.clone()).collect();
         assert!(
             parsed_batches.iter().all(|item| item.trim() == "BATCH-1"),
             "rows with blank batch code must be skipped, actual batch codes: {:?}",
@@ -1273,6 +1284,55 @@ mod tests {
         assert_eq!(row.different_bits, 0);
         assert_eq!(row.missing_bits, 1);
         assert_eq!(row.missing_positions, "L1");
+    }
+
+    #[test]
+    fn write_contrast_sheet_writes_description_and_starts_data_from_row4() {
+        let mut book = umya::new_file();
+        let sheet = book
+            .get_sheet_by_name_mut("Sheet1")
+            .expect("default sheet should exist");
+        write_contrast_sheet(
+            sheet,
+            &[ContrastResultRow {
+                simple_data_batch_code: Some("SAMPLE-1".to_string()),
+                standard_sample_data_batch_code: "STD-1".to_string(),
+                count: 4,
+                same_number_bits: 1,
+                partial_same_bits: 1,
+                different_bits: 1,
+                missing_bits: 1,
+                same_positions: "P01".to_string(),
+                partial_same_positions: "P02".to_string(),
+                different_positions: "P03".to_string(),
+                missing_positions: "P04".to_string(),
+            }],
+        );
+
+        let temp_file = std::env::temp_dir().join(format!(
+            "datalinker_contrast_sheet_{}_{}.xlsx",
+            std::process::id(),
+            now_millis()
+        ));
+        umya::writer::xlsx::write(&book, &temp_file)
+            .expect("failed to write temporary contrast sheet workbook");
+
+        let mut workbook =
+            open_workbook_auto(&temp_file).expect("failed to open temporary contrast workbook");
+        let range = workbook
+            .worksheet_range_at(0)
+            .expect("sheet should exist")
+            .expect("sheet data should be readable");
+
+        let _ = fs::remove_file(&temp_file);
+
+        let description_d3 = range.get((2, 3)).map(cell_to_string).unwrap_or_default();
+        let data_a4 = range.get((3, 0)).map(cell_to_string).unwrap_or_default();
+        let data_d4 = range.get((3, 3)).map(cell_to_string).unwrap_or_default();
+
+        assert_eq!(description_d3, "样品和标样三个值完全一样");
+        assert_eq!(data_a4, "SAMPLE-1");
+        assert_eq!(data_d4, "1");
     }
 }
 
