@@ -11,8 +11,14 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ElMessage } from "element-plus";
 import "element-plus/es/components/message/style/css";
-import type { ContrastRow } from "../types";
-import { loadContrastRows, saveContrastRows } from "../services/configStore";
+import type { ContrastRow, ContrastSortMode } from "../types";
+import {
+  loadContrastRows,
+  loadContrastSortMode,
+  saveContrastRows,
+  saveContrastSortMode,
+  takeNextContrastRowId
+} from "../services/configStore";
 
 type ContextMenuState = {
   visible: boolean;
@@ -21,8 +27,15 @@ type ContextMenuState = {
 };
 
 type RunTask = {
-  rowKey: string;
+  rowId: number;
   rowSnapshot: ContrastRow;
+};
+
+type DuplicateComparable = {
+  standardSamplePath: string;
+  samplePath: string;
+  analysisResultsPath: string;
+  thresholdNumber: string | number;
 };
 
 const contrastForm = reactive({
@@ -33,6 +46,25 @@ const contrastForm = reactive({
 });
 
 const contrastRows = ref<ContrastRow[]>([]);
+const sortMode = ref<ContrastSortMode>("createdAtDesc");
+const sortedContrastRows = computed(() => {
+  const rows = [...contrastRows.value];
+  rows.sort((a, b) => {
+    const primaryDiff = sortMode.value === "updatedAtDesc" ? b.updatedAt - a.updatedAt : b.createdAt - a.createdAt;
+    if (primaryDiff !== 0) {
+      return primaryDiff;
+    }
+
+    const createdAtDiff = b.createdAt - a.createdAt;
+    if (createdAtDiff !== 0) {
+      return createdAtDiff;
+    }
+
+    return b.id - a.id;
+  });
+  return rows;
+});
+
 const currentContrastRow = ref<ContrastRow | null>(null);
 const contextMenu = reactive<ContextMenuState>({
   visible: false,
@@ -45,49 +77,64 @@ const activeTask = ref<RunTask | null>(null);
 const isDrainingQueue = ref(false);
 const queueCount = computed(() => pendingTasks.value.length + (activeTask.value ? 1 : 0));
 
-const rowKeyMap = new WeakMap<ContrastRow, string>();
-let rowKeySeed = 0;
+function normalizePathForDuplicate(path: string) {
+  const replacedSlash = path.trim().replace(/\//g, "\\");
+  const collapsedSlash = replacedSlash.replace(/\\+/g, (_slashes, index) => (index === 0 ? "\\\\" : "\\"));
+  return collapsedSlash.toLowerCase();
+}
 
-function ensureRowKey(row: ContrastRow) {
-  const existing = rowKeyMap.get(row);
-  if (existing) {
-    return existing;
+function normalizeThresholdForDuplicate(value: string | number) {
+  const text = String(value).trim();
+  if (!text) {
+    return "";
   }
-  rowKeySeed += 1;
-  const key = `row-${rowKeySeed}`;
-  rowKeyMap.set(row, key);
-  return key;
+
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) {
+    return String(numeric);
+  }
+
+  return text.toLowerCase();
+}
+
+function createDuplicateKey(row: DuplicateComparable) {
+  return [
+    normalizePathForDuplicate(row.standardSamplePath),
+    normalizePathForDuplicate(row.samplePath),
+    normalizePathForDuplicate(row.analysisResultsPath),
+    normalizeThresholdForDuplicate(row.thresholdNumber)
+  ].join("|");
+}
+
+function hasDuplicateRow(candidate: DuplicateComparable, excludeRowId?: number) {
+  const candidateKey = createDuplicateKey(candidate);
+  return contrastRows.value.some((row) => {
+    if (excludeRowId !== undefined && row.id === excludeRowId) {
+      return false;
+    }
+    return createDuplicateKey(row) === candidateKey;
+  });
 }
 
 function cloneRowSnapshot(row: ContrastRow): ContrastRow {
-  return {
-    standardSamplePath: row.standardSamplePath,
-    samplePath: row.samplePath,
-    analysisResultsPath: row.analysisResultsPath,
-    thresholdNumber: row.thresholdNumber,
-    lastResultFilePath: row.lastResultFilePath,
-    remarks: row.remarks
-  };
+  return { ...row };
 }
 
-function findRowByKey(rowKey: string) {
-  return contrastRows.value.find((row) => ensureRowKey(row) === rowKey);
+function findRowById(rowId: number) {
+  return contrastRows.value.find((row) => row.id === rowId);
 }
 
 function isRowRunning(row: ContrastRow) {
-  const key = ensureRowKey(row);
-  return activeTask.value?.rowKey === key;
+  return activeTask.value?.rowId === row.id;
 }
 
 function isRowQueued(row: ContrastRow) {
-  const key = ensureRowKey(row);
-  return pendingTasks.value.some((task) => task.rowKey === key);
+  return pendingTasks.value.some((task) => task.rowId === row.id);
 }
 
 function removePendingTaskByRow(row: ContrastRow) {
-  const key = ensureRowKey(row);
   const before = pendingTasks.value.length;
-  pendingTasks.value = pendingTasks.value.filter((task) => task.rowKey !== key);
+  pendingTasks.value = pendingTasks.value.filter((task) => task.rowId !== row.id);
   return before - pendingTasks.value.length;
 }
 
@@ -99,7 +146,7 @@ function enqueueRunTask(row: ContrastRow) {
   pendingTasks.value = [
     ...pendingTasks.value,
     {
-      rowKey: ensureRowKey(row),
+      rowId: row.id,
       rowSnapshot: cloneRowSnapshot(row)
     }
   ];
@@ -120,7 +167,7 @@ async function drainQueue() {
 
       try {
         const outputFilePath = await invoke<string>("run_contrast", { row: current.rowSnapshot });
-        const row = findRowByKey(current.rowKey);
+        const row = findRowById(current.rowId);
         if (row) {
           row.lastResultFilePath = outputFilePath;
           await saveContrastConfig({ silent: true });
@@ -196,7 +243,7 @@ async function chooseRowStandardSamplePath(row: ContrastRow) {
   if (typeof file === "string") {
     row.standardSamplePath = file;
     row.lastResultFilePath = "";
-    await onContrastRowEdited();
+    await onContrastRowEdited(row);
   }
 }
 
@@ -209,7 +256,7 @@ async function chooseRowSamplePath(row: ContrastRow) {
   if (typeof file === "string") {
     row.samplePath = file;
     row.lastResultFilePath = "";
-    await onContrastRowEdited();
+    await onContrastRowEdited(row);
   }
 }
 
@@ -221,7 +268,7 @@ async function chooseRowAnalysisResultsPath(row: ContrastRow) {
   if (typeof dir === "string") {
     row.analysisResultsPath = dir;
     row.lastResultFilePath = "";
-    await onContrastRowEdited();
+    await onContrastRowEdited(row);
   }
 }
 
@@ -242,13 +289,29 @@ async function onSaveContrastConfigClick() {
 
 async function loadContrastConfig() {
   try {
-    contrastRows.value = await loadContrastRows();
+    const rows = await loadContrastRows();
+    const storedSortMode = await loadContrastSortMode();
+    contrastRows.value = rows;
+    sortMode.value = storedSortMode;
   } catch (error) {
     ElMessage.error(`加载配置失败：${error}`);
   }
 }
 
-async function onContrastRowEdited() {
+async function onSortModeChanged(value: ContrastSortMode | string) {
+  const nextMode: ContrastSortMode = value === "updatedAtDesc" ? "updatedAtDesc" : "createdAtDesc";
+  sortMode.value = nextMode;
+  try {
+    await saveContrastSortMode(nextMode);
+  } catch (error) {
+    ElMessage.error(`保存排序方式失败：${error}`);
+  }
+}
+
+async function onContrastRowEdited(row?: ContrastRow, options?: { touchUpdatedAt?: boolean }) {
+  if (row && options?.touchUpdatedAt !== false) {
+    row.updatedAt = Date.now();
+  }
   await saveContrastConfig({ silent: true });
 }
 
@@ -262,13 +325,30 @@ async function addContrastRow() {
     return;
   }
 
+  const candidate: DuplicateComparable = {
+    standardSamplePath: contrastForm.standardSamplePath,
+    samplePath: contrastForm.samplePath,
+    analysisResultsPath: contrastForm.analysisResultsPath,
+    thresholdNumber: contrastForm.thresholdNumber
+  };
+
+  if (hasDuplicateRow(candidate)) {
+    ElMessage.warning("已存在相同配置（标准样本路径/样本路径/解析结果路径/阈值），请勿重复添加");
+    return;
+  }
+
+  const now = Date.now();
+  const nextId = await takeNextContrastRowId();
   contrastRows.value.push({
+    id: nextId,
     standardSamplePath: contrastForm.standardSamplePath,
     samplePath: contrastForm.samplePath,
     analysisResultsPath: contrastForm.analysisResultsPath,
     thresholdNumber: String(contrastForm.thresholdNumber),
     lastResultFilePath: "",
-    remarks: ""
+    remarks: "",
+    createdAt: now,
+    updatedAt: now
   });
   await saveContrastConfig({ silent: true });
 }
@@ -296,13 +376,32 @@ async function copySelectedRow() {
   if (!currentContrastRow.value) {
     return;
   }
-  const index = contrastRows.value.indexOf(currentContrastRow.value);
-  const copy: ContrastRow = { ...currentContrastRow.value };
-  if (index >= 0) {
-    contrastRows.value.splice(index, 0, copy);
-  } else {
-    contrastRows.value.push(copy);
+
+  const source = currentContrastRow.value;
+  const candidate: DuplicateComparable = {
+    standardSamplePath: source.standardSamplePath,
+    samplePath: source.samplePath,
+    analysisResultsPath: source.analysisResultsPath,
+    thresholdNumber: source.thresholdNumber
+  };
+
+  if (hasDuplicateRow(candidate)) {
+    ElMessage.warning("复制失败：已存在相同配置，需至少修改四项中的一项");
+    hideContextMenu();
+    return;
   }
+
+  const now = Date.now();
+  const nextId = await takeNextContrastRowId();
+  const copy: ContrastRow = {
+    ...source,
+    id: nextId,
+    lastResultFilePath: "",
+    createdAt: now,
+    updatedAt: now
+  };
+
+  contrastRows.value.push(copy);
   await saveContrastConfig({ silent: true });
   hideContextMenu();
 }
@@ -403,7 +502,7 @@ async function openAnalysisResultPath(row: ContrastRow) {
       if (opened) {
         if (row.lastResultFilePath !== latestFile) {
           row.lastResultFilePath = latestFile;
-          await onContrastRowEdited();
+          await saveContrastConfig({ silent: true });
         }
         return;
       }
@@ -418,7 +517,25 @@ async function openAnalysisResultPath(row: ContrastRow) {
 
 async function onThresholdChanged(row: ContrastRow) {
   row.lastResultFilePath = "";
-  await onContrastRowEdited();
+  await onContrastRowEdited(row);
+}
+
+async function onRemarksChanged(row: ContrastRow) {
+  await onContrastRowEdited(row);
+}
+
+function formatDateTime(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "-";
+  }
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function updateCurrentRow(row: ContrastRow | null) {
@@ -471,14 +588,31 @@ onBeforeUnmount(() => {
     <p v-if="queueCount > 0" class="contrast-queue">
       当前队列：{{ queueCount }}（运行中 {{ activeTask ? 1 : 0 }}，排队 {{ pendingTasks.length }}）
     </p>
+    <div class="sort-row">
+      <label>排序方式：</label>
+      <el-select v-model="sortMode" size="small" class="sort-select" @change="onSortModeChanged">
+        <el-option label="创建时间（新到旧）" value="createdAtDesc" />
+        <el-option label="修改时间（新到旧）" value="updatedAtDesc" />
+      </el-select>
+    </div>
 
     <el-table
-      :data="contrastRows"
+      :data="sortedContrastRows"
       table-layout="fixed"
       highlight-current-row
       @current-change="updateCurrentRow"
       @row-contextmenu="onContrastRowContextMenu"
     >
+      <el-table-column label="创建时间" width="168">
+        <template #default="scope">
+          <span class="time-cell">{{ formatDateTime(scope.row.createdAt) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="修改时间" width="168">
+        <template #default="scope">
+          <span class="time-cell">{{ formatDateTime(scope.row.updatedAt) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="standardSamplePath" label="标准样本路径" min-width="150">
         <template #default="scope">
           <div class="path-cell">
@@ -541,7 +675,7 @@ onBeforeUnmount(() => {
       </el-table-column>
       <el-table-column label="备注" min-width="120">
         <template #default="scope">
-          <el-input v-model="scope.row.remarks" size="small" @change="onContrastRowEdited" />
+          <el-input v-model="scope.row.remarks" size="small" @change="onRemarksChanged(scope.row)" />
         </template>
       </el-table-column>
     </el-table>
@@ -600,6 +734,17 @@ onBeforeUnmount(() => {
   line-height: 1.45;
 }
 
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.sort-select {
+  width: 220px;
+}
+
 .path-cell {
   display: flex;
   align-items: center;
@@ -609,5 +754,10 @@ onBeforeUnmount(() => {
 .path-cell :deep(.el-input) {
   flex: 1;
   min-width: 0;
+}
+
+.time-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 </style>
