@@ -314,7 +314,7 @@ fn is_real_value(value: f64) -> bool {
     value != 0.0
 }
 
-fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
+fn get_excel_data(path: &Path, append_row_index_to_batch_code: bool) -> Result<Vec<DnaData>, String> {
     let mut workbook =
         open_workbook_auto(path).map_err(|e| format!("Parse Excel failed: {}", e))?;
     let range = workbook
@@ -334,11 +334,17 @@ fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
     tab_indices.sort_unstable();
 
     let mut dna_data_list = Vec::new();
-    for row in rows {
+    for (row_offset, row) in rows.enumerate() {
         let batch_code = row.get(1).map(cell_to_string).unwrap_or_default();
         if is_blank(&batch_code) {
             continue;
         }
+        let excel_row_number = row_offset + 2;
+        let batch_key = if append_row_index_to_batch_code {
+            format!("{}#{}", batch_code, excel_row_number)
+        } else {
+            batch_code.clone()
+        };
 
         for idx in &tab_indices {
             let idx = *idx;
@@ -350,7 +356,7 @@ fn get_excel_data(path: &Path) -> Result<Vec<DnaData>, String> {
             let c = convert_data(c_raw.as_deref());
             let label = tab_map.get(&idx).cloned().unwrap_or_default();
             dna_data_list.push(DnaData {
-                batch_code: batch_code.clone(),
+                batch_code: batch_key.clone(),
                 label,
                 a,
                 b,
@@ -395,26 +401,30 @@ fn paternity_compare(standard: &DnaData, sample: &DnaData, threshold: i32) -> i3
 
     let standard_values = [standard.a, standard.b, standard.c];
     let sample_values = [sample.a, sample.b, sample.c];
-
-    if standard_values == sample_values {
-        return RESULT_SAME;
-    }
-
     let threshold = threshold as f64;
-    let mut has_threshold_match = false;
+    let mut same_positions = 0usize;
+    let mut has_real_value_match = false;
     for idx in 0..3 {
         let standard_value = standard_values[idx];
         let sample_value = sample_values[idx];
-        if !is_real_value(standard_value) || !is_real_value(sample_value) {
+
+        if !is_real_value(standard_value) && !is_real_value(sample_value) {
+            same_positions += 1;
             continue;
         }
-        if (sample_value - standard_value).abs() <= threshold {
-            has_threshold_match = true;
-            break;
+
+        if is_real_value(standard_value)
+            && is_real_value(sample_value)
+            && (sample_value - standard_value).abs() <= threshold
+        {
+            same_positions += 1;
+            has_real_value_match = true;
         }
     }
 
-    if has_threshold_match {
+    if same_positions == 3 {
+        RESULT_SAME
+    } else if has_real_value_match {
         RESULT_PARTIAL_SAME
     } else {
         RESULT_DIFFERENT
@@ -701,8 +711,8 @@ fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
         "",
         "\u{5B8C}\u{5168}\u{5339}\n\u{914D}",
         "\u{4E0D}\u{5B8C}\u{5168}\n\u{5339}\u{914D}",
-        "\u{5B8C}\u{5168}\u{4E0D}\n\u{540C}",
-        "\u{6807}\u{6837}\u{4F4D}\n\u{70B9}\u{7F3A}\u{5931}",
+        "\u{5B8C}\u{5168}\u{4E0D}\n\u{5339}\u{914D}",
+        "\u{7F3A}\u{5931}",
         "P**/P**...",
         "",
         "",
@@ -711,11 +721,11 @@ fn write_contrast_sheet(sheet: &mut Worksheet, data: &[ContrastResultRow]) {
     let descriptions = [
         "",
         "",
-        "",
-        "\u{6837}\u{54C1}\u{548C}\u{6807}\u{6837}\u{4E09}\u{4E2A}\u{503C}\u{5B8C}\u{5168}\u{4E00}\u{6837}",
-        "\u{6837}\u{54C1}\u{548C}\u{6807}\u{6837}\u{5982}\u{679C}\u{4E09}\u{4E2A}\u{503C}\u{4E2D}\u{53EA}\u{6709}\u{7A7A}\u{503C}\u{80FD}\u{5339}\u{914D}\u{4E0D}\u{5C5E}\u{4E8E}\u{8BE5}\u{7C7B}\u{FF0C}\u{53EA}\u{6BD4}\u{8F83}\u{5177}\u{6709}\u{771F}\u{5B9E}\u{503C}\u{7684}",
-        "\u{6837}\u{54C1}\u{548C}\u{6807}\u{6837}\u{53EA}\u{6BD4}\u{8F83}\u{5177}\u{6709}\u{771F}\u{5B9E}\u{503C}\u{FF0C}\u{4E0D}\u{6BD4}\u{8F83}\u{7A7A}\u{503C}",
-        "\u{6837}\u{54C1}\u{6216}\u{6807}\u{6837}\u{4E09}\u{4E2A}\u{503C}\u{90FD}\u{662F}\u{7A7A}\u{7684}",
+        "\u{6807}\u{6837}\u{7F16}\u{53F7}\u{6309} Excel \u{539F}\u{59CB}\u{6587}\u{672C}\u{9010}\u{5B57}\u{7B26}\u{4E25}\u{683C}\u{5339}\u{914D}\u{FF08}\u{533A}\u{5206}\u{5927}\u{5C0F}\u{5199}/\u{7A7A}\u{683C}/\u{5168}\u{534A}\u{89D2}/\u{6807}\u{70B9}\u{FF09}",
+        "\u{9010}\u{4F4D}\u{6BD4}\u{8F83}\u{4E09}\u{8054}\u{503C}\u{FF0C}null/null \u{6216} abs(\u{5DEE}\u{503C}) <= \u{9608}\u{503C}\u{90FD}\u{8BA1}\u{4E3A}\u{76F8}\u{540C}\u{FF1B}\u{4E09}\u{4F4D}\u{90FD}\u{76F8}\u{540C}\u{4E3A}\u{5B8C}\u{5168}\u{5339}\u{914D}",
+        "\u{4E0D}\u{5C5E}\u{4E8E}\u{5B8C}\u{5168}\u{5339}\u{914D}\u{FF0C}\u{4E14}\u{81F3}\u{5C11} 1 \u{4E2A}\u{53CC}\u{65B9}\u{5747}\u{4E3A}\u{771F}\u{5B9E}\u{503C}\u{7684}\u{4F4D}\u{7F6E}\u{6EE1}\u{8DB3} abs(\u{5DEE}\u{503C}) <= \u{9608}\u{503C}\u{FF08}\u{4EC5} null/null \u{4E0D}\u{8BA1}\u{5165}\u{8BE5}\u{7C7B}\u{FF09}",
+        "\u{4E0D}\u{5C5E}\u{4E8E}\u{6807}\u{6837}\u{4F4D}\u{70B9}\u{7F3A}\u{5931}/\u{5B8C}\u{5168}\u{5339}\u{914D}\u{FF0C}\u{4E14}\u{53CC}\u{65B9}\u{5747}\u{4E3A}\u{771F}\u{5B9E}\u{503C}\u{7684}\u{4F4D}\u{7F6E}\u{547D}\u{4E2D}\u{6570}\u{4E3A} 0",
+        "\u{6807}\u{6837}\u{6216}\u{6837}\u{54C1}\u{8BE5}\u{4F4D}\u{70B9}\u{4E09}\u{4E2A}\u{503C}\u{90FD}\u{4E3A} null\u{FF0C}\u{6216}\u{6837}\u{54C1}\u{65E0}\u{5BF9}\u{5E94}\u{4F4D}\u{70B9}",
         "",
         "",
         "",
@@ -926,8 +936,8 @@ fn save_contrast_config(rows: Vec<ContrastRow>, path: Option<String>) -> Result<
 }
 
 fn run_contrast_internal(row: ContrastRow) -> Result<String, String> {
-    let standard_list = get_excel_data(Path::new(&row.standard_sample_path))?;
-    let sample_list = get_excel_data(Path::new(&row.sample_path))?;
+    let standard_list = get_excel_data(Path::new(&row.standard_sample_path), true)?;
+    let sample_list = get_excel_data(Path::new(&row.sample_path), false)?;
     if standard_list.is_empty() || sample_list.is_empty() {
         return Err(
             "\u{89E3}\u{6790}Excel\u{5F02}\u{5E38},\u{8BF7}\u{68C0}\u{67E5}Excel\u{6570}\u{636E}"
@@ -1120,6 +1130,45 @@ mod tests {
     }
 
     #[test]
+    fn normal_process_keeps_case_sensitive_standard_batch_codes_separate() {
+        let standard_list = vec![
+            dna("BYX003/R0612641", "L1", 10.0, 11.0, 12.0),
+            dna("BYx003/R0612641", "L1", 20.0, 21.0, 22.0),
+        ];
+        let sample_list = vec![dna("SAMPLE-1", "L1", 10.0, 11.0, 12.0)];
+        let standard_batch_map = build_batch_data_map(&standard_list);
+        let sample_batch_map = build_batch_label_map(&sample_list);
+
+        let result = normal_process(
+            &contrast_row_for_test(),
+            &standard_batch_map,
+            &sample_batch_map,
+            true,
+        );
+
+        assert_eq!(result.summary_rows.len(), 2);
+        let exact_case_row = result
+            .summary_rows
+            .iter()
+            .find(|row| row.standard_sample_data_batch_code == "BYX003/R0612641")
+            .expect("BYX003/R0612641 summary row not found");
+        assert_eq!(exact_case_row.same_number_bits, 1);
+        assert_eq!(exact_case_row.partial_same_bits, 0);
+        assert_eq!(exact_case_row.different_bits, 0);
+        assert_eq!(exact_case_row.missing_bits, 0);
+
+        let mixed_case_row = result
+            .summary_rows
+            .iter()
+            .find(|row| row.standard_sample_data_batch_code == "BYx003/R0612641")
+            .expect("BYx003/R0612641 summary row not found");
+        assert_eq!(mixed_case_row.same_number_bits, 0);
+        assert_eq!(mixed_case_row.partial_same_bits, 0);
+        assert_eq!(mixed_case_row.different_bits, 1);
+        assert_eq!(mixed_case_row.missing_bits, 0);
+    }
+
+    #[test]
     fn normal_process_paternity_supports_partial_diff_missing_and_positions() {
         let standard_list = vec![
             dna("STD-1", "L-SAME", 10.0, 20.0, 30.0),
@@ -1164,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn paternity_only_empty_overlap_is_not_partial() {
+    fn paternity_only_empty_overlap_is_different() {
         let standard = dna("STD-1", "L1", 10.0, 0.0, 0.0);
         let sample = dna("SAMPLE-1", "L1", 0.0, 20.0, 0.0);
         let result = paternity_compare(&standard, &sample, 1);
@@ -1173,10 +1222,34 @@ mod tests {
 
     #[test]
     fn paternity_compares_by_position_not_cross_position() {
-        let standard = dna("STD-1", "L1", 10.0, 0.0, 0.0);
-        let sample = dna("SAMPLE-1", "L1", 0.0, 10.0, 0.0);
+        let standard = dna("STD-1", "L1", 10.0, 11.0, 12.0);
+        let sample = dna("SAMPLE-1", "L1", 11.0, 10.0, 99.0);
         let result = paternity_compare(&standard, &sample, 0);
         assert_eq!(result, RESULT_DIFFERENT);
+    }
+
+    #[test]
+    fn paternity_all_positions_within_threshold_is_same() {
+        let standard = dna("STD-1", "L1", 155.0, 180.0, 201.0);
+        let sample = dna("SAMPLE-1", "L1", 157.0, 178.0, 200.0);
+        let result = paternity_compare(&standard, &sample, 2);
+        assert_eq!(result, RESULT_SAME);
+    }
+
+    #[test]
+    fn paternity_null_null_and_threshold_hits_all_positions_is_same() {
+        let standard = dna("STD-1", "L1", 10.0, 0.0, 30.0);
+        let sample = dna("SAMPLE-1", "L1", 11.0, 0.0, 29.0);
+        let result = paternity_compare(&standard, &sample, 1);
+        assert_eq!(result, RESULT_SAME);
+    }
+
+    #[test]
+    fn paternity_missing_has_priority_even_when_both_triplets_are_empty() {
+        let standard = dna("STD-1", "L1", 0.0, 0.0, 0.0);
+        let sample = dna("SAMPLE-1", "L1", 0.0, 0.0, 0.0);
+        let result = paternity_compare(&standard, &sample, 1);
+        assert_eq!(result, RESULT_MISSING);
     }
 
     #[test]
@@ -1212,7 +1285,7 @@ mod tests {
         umya::writer::xlsx::write(&book, &temp_file)
             .expect("failed to create temporary regression workbook");
 
-        let parsed = get_excel_data(&temp_file).expect("failed to parse test workbook");
+        let parsed = get_excel_data(&temp_file, false).expect("failed to parse test workbook");
 
         let _ = fs::remove_file(&temp_file);
 
@@ -1262,6 +1335,49 @@ mod tests {
         assert_eq!(row.different_bits, 0);
         assert_eq!(row.missing_bits, 1);
         assert_eq!(row.missing_positions, "L1");
+    }
+
+    #[test]
+    fn get_excel_data_standard_key_uses_batch_code_plus_row_number() {
+        let mut book = umya::new_file();
+        let sheet = book
+            .get_sheet_by_name_mut("Sheet1")
+            .expect("default sheet should exist");
+
+        sheet.get_cell_mut((1u32, 1u32)).set_value("INDEX");
+        sheet.get_cell_mut((3u32, 1u32)).set_value("L1");
+        sheet.get_cell_mut((2u32, 2u32)).set_value("STD-A");
+        sheet.get_cell_mut((3u32, 2u32)).set_value("10");
+        sheet.get_cell_mut((4u32, 2u32)).set_value("11");
+        sheet.get_cell_mut((5u32, 2u32)).set_value("12");
+
+        sheet.get_cell_mut((2u32, 3u32)).set_value("STD-A");
+        sheet.get_cell_mut((3u32, 3u32)).set_value("20");
+        sheet.get_cell_mut((4u32, 3u32)).set_value("21");
+        sheet.get_cell_mut((5u32, 3u32)).set_value("22");
+
+        let temp_file = std::env::temp_dir().join(format!(
+            "datalinker_parse_standard_key_{}_{}.xlsx",
+            std::process::id(),
+            now_millis()
+        ));
+        umya::writer::xlsx::write(&book, &temp_file)
+            .expect("failed to create temporary workbook for standard key test");
+
+        let parsed = get_excel_data(&temp_file, true).expect("failed to parse test workbook");
+        let _ = fs::remove_file(&temp_file);
+
+        let batch_codes: Vec<String> = parsed.iter().map(|item| item.batch_code.clone()).collect();
+        assert!(
+            batch_codes.iter().any(|code| code == "STD-A#2"),
+            "STD-A row 2 key should exist, got {:?}",
+            batch_codes
+        );
+        assert!(
+            batch_codes.iter().any(|code| code == "STD-A#3"),
+            "STD-A row 3 key should exist, got {:?}",
+            batch_codes
+        );
     }
 
     #[test]
@@ -1326,11 +1442,19 @@ mod tests {
 
         let _ = fs::remove_file(&temp_file);
 
+        let description_c3 = range.get((2, 2)).map(cell_to_string).unwrap_or_default();
         let description_d3 = range.get((2, 3)).map(cell_to_string).unwrap_or_default();
         let data_a4 = range.get((3, 0)).map(cell_to_string).unwrap_or_default();
         let data_d4 = range.get((3, 3)).map(cell_to_string).unwrap_or_default();
 
-        assert_eq!(description_d3, "样品和标样三个值完全一样");
+        assert_eq!(
+            description_c3,
+            "标样编号按 Excel 原始文本逐字符严格匹配（区分大小写/空格/全半角/标点）"
+        );
+        assert_eq!(
+            description_d3,
+            "逐位比较三联值，null/null 或 abs(差值) <= 阈值都计为相同；三位都相同为完全匹配"
+        );
         assert_eq!(data_a4, "SAMPLE-1");
         assert_eq!(data_d4, "1");
     }
